@@ -96,9 +96,22 @@ function OathlockApp() {
   const [transferTo, setTransferTo] = useState('');
   const [nameResult, setNameResult] = useState<NameResult | null>(null);
 
+  const heldTokens = useMemo(() => {
+    const rows: CoinBalance[] = [];
+    const seen = new Set<string>();
+    for (const item of [...tokens, ...coins]) {
+      const key = (item.fa || item.coinType || item.type || item.symbol).toLowerCase();
+      const alt = item.symbol.toLowerCase();
+      if (seen.has(key) || seen.has(alt)) continue;
+      seen.add(key);
+      seen.add(alt);
+      rows.push(item);
+    }
+    return rows;
+  }, [tokens, coins]);
   const selectedToken = useMemo(
-    () => tokens.find((item) => (item.fa || item.type) === token) || tokens[0],
-    [tokens, token],
+    () => heldTokens.find((item) => (item.fa || item.type) === token) || heldTokens[0],
+    [heldTokens, token],
   );
   const dexCoins = useMemo(() => coins.filter((item) => item.coinType), [coins]);
 
@@ -107,13 +120,14 @@ function OathlockApp() {
     const wallet = await loadWalletData(addr);
     setCoins(wallet.coins);
     setTokens(wallet.tokens);
-    if (wallet.tokens[0] && !wallet.tokens.some((item) => (item.fa || item.type) === token)) {
-      setToken(wallet.tokens[0].fa || wallet.tokens[0].type);
+    const pick = wallet.tokens[0] || wallet.coins[0];
+    if (pick && ![...wallet.tokens, ...wallet.coins].some((item) => (item.fa || item.type) === token)) {
+      setToken(pick.fa || pick.type);
     }
-    const first = wallet.coins.find((item) => item.coinType);
-    const second = wallet.coins.find((item) => item.coinType && item.coinType !== first?.coinType) || first;
-    if (first?.coinType && !wallet.coins.some((item) => item.coinType === lpX)) setLpX(first.coinType);
-    if (second?.coinType && !wallet.coins.some((item) => item.coinType === lpY)) setLpY(second.coinType);
+    const firstCoin = wallet.coins.find((item) => item.coinType);
+    const secondCoin = wallet.coins.find((item) => item.coinType && item.coinType !== firstCoin?.coinType) || firstCoin;
+    if (firstCoin?.coinType && !wallet.coins.some((item) => item.coinType === lpX)) setLpX(firstCoin.coinType);
+    if (secondCoin?.coinType && !wallet.coins.some((item) => item.coinType === lpY)) setLpY(secondCoin.coinType);
     setLocks(await loadLocks(addr));
     setShare(await loadShare(addr));
   }, [account, token, lpX, lpY]);
@@ -234,8 +248,8 @@ function OathlockApp() {
             <div className="grid gap-4">
               <Field label="Token" hint="Fungible asset">
                 <select className={inputClass()} value={selectedToken?.fa || selectedToken?.type || token} onChange={(e) => setToken(e.target.value)}>
-                  {(tokens.length ? tokens : [{ symbol: 'SUPRA', type: '0xa', fa: '0xa', amount: '0', decimals: 8, raw: 0n }]).map((item) => (
-                    <option key={item.fa || item.type} value={item.fa || item.type}>{item.symbol} · {item.amount}</option>
+                  {(heldTokens.length ? heldTokens : [{ symbol: 'SUPRA', type: '0xa', fa: '0xa', amount: '0', decimals: 8, raw: 0n }]).map((item) => (
+                    <option key={`${item.symbol}-${item.fa || item.type}`} value={item.fa || item.type}>{item.symbol} · {item.amount}</option>
                   ))}
                 </select>
               </Field>
