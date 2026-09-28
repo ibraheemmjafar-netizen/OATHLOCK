@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Clock3, ExternalLink, KeyRound, LockKeyhole, Menu, RefreshCw, ShieldCheck, Sparkles, Wallet, X } from 'lucide-react';
+import { ArrowDown, ArrowUpRight, Clock3, ExternalLink, KeyRound, LockKeyhole, Menu, RefreshCw, ShieldCheck, Sparkles, Wallet, X } from 'lucide-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import mascot from '@/assets/oathlock-mascot.png';
 import {
   actions,
   CHAIN,
+  COIN,
   dateToUnix,
-  formatAmount,
   loadLocks,
   loadShare,
   loadWalletData,
@@ -31,7 +31,12 @@ const initialUnlock = unixToInput(Math.floor(Date.now() / 1000) + 180);
 const initialStart = unixToInput(Math.floor(Date.now() / 1000));
 const initialEnd = unixToInput(Math.floor(Date.now() / 1000) + 7 * 86400);
 
-function Button({ children, variant = 'primary', className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
+function Button({
+  children,
+  variant = 'primary',
+  className = '',
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
   const variants = {
     primary: 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_12px_34px_hsl(var(--primary)/.18)] hover:brightness-110',
     secondary: 'bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] hover:brightness-110',
@@ -39,7 +44,10 @@ function Button({ children, variant = 'primary', className = '', ...props }: Rea
     danger: 'bg-rose-500/15 text-rose-200 hover:bg-rose-500/25',
   };
   return (
-    <button className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${variants[variant]} ${className}`} {...props}>
+    <button
+      className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${variants[variant]} ${className}`}
+      {...props}
+    >
       {children}
     </button>
   );
@@ -74,8 +82,8 @@ function OathlockApp() {
   const [token, setToken] = useState('0xa');
   const [amount, setAmount] = useState('0.001');
   const [unlock, setUnlock] = useState(initialUnlock);
-  const [lpX, setLpX] = useState('0x1::supra_coin::SupraCoin');
-  const [lpY, setLpY] = useState('0x1::supra_coin::SupraCoin');
+  const [lpX, setLpX] = useState(COIN);
+  const [lpY, setLpY] = useState(COIN);
   const [lpAx, setLpAx] = useState('0.01');
   const [lpAy, setLpAy] = useState('0.01');
   const [lpUnlock, setLpUnlock] = useState(initialUnlock);
@@ -99,13 +107,13 @@ function OathlockApp() {
     const wallet = await loadWalletData(addr);
     setCoins(wallet.coins);
     setTokens(wallet.tokens);
-    if (!wallet.tokens.some((item) => (item.fa || item.type) === token) && wallet.tokens[0]) {
+    if (wallet.tokens[0] && !wallet.tokens.some((item) => (item.fa || item.type) === token)) {
       setToken(wallet.tokens[0].fa || wallet.tokens[0].type);
     }
-    if (wallet.coins[0]?.coinType) {
-      if (!wallet.coins.some((item) => item.coinType === lpX)) setLpX(wallet.coins[0].coinType!);
-      if (!wallet.coins.some((item) => item.coinType === lpY)) setLpY(wallet.coins[1]?.coinType || wallet.coins[0].coinType!);
-    }
+    const first = wallet.coins.find((item) => item.coinType);
+    const second = wallet.coins.find((item) => item.coinType && item.coinType !== first?.coinType) || first;
+    if (first?.coinType && !wallet.coins.some((item) => item.coinType === lpX)) setLpX(first.coinType);
+    if (second?.coinType && !wallet.coins.some((item) => item.coinType === lpY)) setLpY(second.coinType);
     setLocks(await loadLocks(addr));
     setShare(await loadShare(addr));
   }, [account, token, lpX, lpY]);
@@ -158,14 +166,14 @@ function OathlockApp() {
     setNotice({ tone: 'neutral', text: 'Disconnected.' });
   }
 
-  const ownedName = Boolean(account && nameResult && !nameResult.available && nameResult.owner?.toLowerCase().includes(account.slice(-8).toLowerCase()));
-
   return (
     <div className="min-h-screen bg-[hsl(var(--background))] text-foreground">
       <header className="sticky top-0 z-30 border-b border-white/5 bg-[hsl(var(--background))]/90 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <a href="#lock" className="flex items-center gap-3 font-semibold tracking-[0.18em]">
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]"><KeyRound className="h-4 w-4" /></span>
+            <span className="grid h-9 w-9 place-items-center rounded-full bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]">
+              <KeyRound className="h-4 w-4" />
+            </span>
             OATHLOCK
           </a>
           <nav className="hidden items-center gap-6 text-sm text-muted-foreground md:flex">
@@ -179,33 +187,52 @@ function OathlockApp() {
             {account ? (
               <Button variant="secondary" onClick={disconnect}>{shortAddress(account)} <X className="h-3.5 w-3.5" /></Button>
             ) : (
-              <Button onClick={connect}><Wallet className="h-4 w-4" /> Connect</Button>
+              <Button onClick={connect}><Wallet className="h-4 w-4" /> Connect wallet</Button>
             )}
             <button className="md:hidden" onClick={() => setMenuOpen((v) => !v)}><Menu className="h-5 w-5" /></button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl space-y-6 px-4 py-8">
-        <section className="grid gap-6 lg:grid-cols-[1.2fr_.8fr]">
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Time-lock tokens or build a Dexlyn LP you can point to. Your wallet stays in control at every step.</p>
-            <div className={`rounded-2xl border px-4 py-3 text-sm ${notice.tone === 'error' ? 'border-rose-500/30 text-rose-200' : notice.tone === 'success' ? 'border-emerald-500/30 text-emerald-200' : 'border-white/10 text-muted-foreground'}`}>{notice.text}</div>
+      <main className="mx-auto max-w-6xl space-y-10 px-4 py-10">
+        <section className="grid items-center gap-8 lg:grid-cols-[1.15fr_.85fr]">
+          <div>
+            <p className="mb-4 inline-flex rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Supra mainnet / chain 8</p>
+            <h1 className="max-w-xl text-5xl font-semibold leading-[0.95] md:text-7xl">
+              Keep your word. <span className="text-[hsl(var(--primary))]">On-chain.</span>
+            </h1>
+            <p className="mt-5 max-w-xl text-sm text-muted-foreground md:text-base">
+              Oathlock is the friend who holds you to it. Lock tokens, secure Dexlyn LP, ship team vesting, and put a name on your wallet — without a developer console in sight.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Button onClick={() => document.getElementById('lock')?.scrollIntoView({ behavior: 'smooth' })}>
+                Create a lock <ArrowUpRight className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" onClick={() => document.getElementById('lock')?.scrollIntoView({ behavior: 'smooth' })}>
+                How it works <ArrowDown className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
-          <img src={mascot} alt="" className="mx-auto h-36 w-36 object-contain mix-blend-screen" />
+          <div className="relative mx-auto">
+            <img src={mascot} alt="" className="h-64 w-64 object-contain mix-blend-screen md:h-80 md:w-80" />
+          </div>
         </section>
+
+        <div className={`rounded-2xl border px-4 py-3 text-sm ${notice.tone === 'error' ? 'border-rose-500/30 text-rose-200' : notice.tone === 'success' ? 'border-emerald-500/30 text-emerald-200' : 'border-white/10 text-muted-foreground'}`}>
+          {notice.text}
+        </div>
 
         <section id="lock" className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Token lock</h2>
-                <p className="text-sm text-muted-foreground">Any fungible asset in this wallet.</p>
+                <p className="text-sm text-muted-foreground">Tokens this wallet actually holds.</p>
               </div>
               <LockKeyhole className="h-5 w-5 text-[hsl(var(--primary))]" />
             </div>
             <div className="grid gap-4">
-              <Field label="Token" hint={selectedToken ? 'Fungible asset' : undefined}>
+              <Field label="Token" hint="Fungible asset">
                 <select className={inputClass()} value={selectedToken?.fa || selectedToken?.type || token} onChange={(e) => setToken(e.target.value)}>
                   {(tokens.length ? tokens : [{ symbol: 'SUPRA', type: '0xa', fa: '0xa', amount: '0', decimals: 8, raw: 0n }]).map((item) => (
                     <option key={item.fa || item.type} value={item.fa || item.type}>{item.symbol} · {item.amount}</option>
@@ -221,7 +248,9 @@ function OathlockApp() {
                 </Field>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="ghost" onClick={() => setUnlock(unixToInput(Math.floor(Date.now() / 1000) + 180))}><Clock3 className="h-4 w-4" /> 3 minute test lock</Button>
+                <Button variant="ghost" onClick={() => setUnlock(unixToInput(Math.floor(Date.now() / 1000) + 180))}>
+                  <Clock3 className="h-4 w-4" /> 3 minute test lock
+                </Button>
                 <Button variant="secondary" disabled={busy} onClick={() => run('Prepare SUPRA', () => actions.migrate(provider!, account))}>Prepare SUPRA</Button>
                 <Button disabled={busy || !selectedToken} onClick={() => run('Lock token', () => actions.lockToken(provider!, account, selectedToken!.fa || selectedToken!.type, toAmount(amount, selectedToken!.decimals), dateToUnix(unlock)))}>
                   Lock {selectedToken?.symbol || 'token'} <ArrowUpRight className="h-4 w-4" />
@@ -239,7 +268,9 @@ function OathlockApp() {
               <button onClick={() => refresh()}><RefreshCw className="h-4 w-4" /></button>
             </div>
             <div className="space-y-3">
-              {locks.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-8 text-sm text-muted-foreground">No open locks on this wallet.</div> : locks.map((lock) => (
+              {locks.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 p-8 text-sm text-muted-foreground">No open locks on this wallet.</div>
+              ) : locks.map((lock) => (
                 <div key={`${lock.kind}-${lock.id}`} className="rounded-2xl border border-white/10 p-4">
                   <p className="text-sm font-medium">{lock.kind} #{lock.id}</p>
                   <p className="text-sm text-muted-foreground">{lock.amount} · unlocks {new Date(lock.unlock * 1000).toLocaleString()}</p>
@@ -254,14 +285,14 @@ function OathlockApp() {
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-xl font-semibold">Dexlyn LP lock</h2>
-              <p className="text-sm text-muted-foreground">Needs two different Coin types. FA-only tokens stay in Token lock.</p>
+              <p className="text-sm text-muted-foreground">Two different Coin types only. FA-only tokens stay in Token lock.</p>
             </div>
             <Button variant="ghost" onClick={() => {
-              const a = dexCoins[0];
-              const b = dexCoins[1] || dexCoins[0];
-              if (a) setLpAx((Number(a.amount) * 0.01).toFixed(6));
-              if (b) setLpAy((Number(b.amount) * 0.01).toFixed(6));
-            }}><Sparkles className="h-4 w-4" /> Use 1% of each</Button>
+              if (dexCoins[0]) setLpAx((Number(dexCoins[0].amount) * 0.01).toFixed(6));
+              if (dexCoins[1] || dexCoins[0]) setLpAy((Number((dexCoins[1] || dexCoins[0]).amount) * 0.01).toFixed(6));
+            }}>
+              <Sparkles className="h-4 w-4" /> Use 1% of each
+            </Button>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <Field label="First coin">
@@ -296,15 +327,15 @@ function OathlockApp() {
             <h2 className="text-xl font-semibold">Create a team vault</h2>
             <p className="mb-4 text-sm text-muted-foreground">SUPRA vesting, on-chain schedule.</p>
             <div className="grid gap-4">
-              <Field label="Recipient">
-                <input className={inputClass()} placeholder="Wallet that can claim" value={vaultTo} onChange={(e) => setVaultTo(e.target.value)} />
+              <Field label="Who gets it" hint="Wallet address">
+                <input className={inputClass()} placeholder="Paste recipient wallet" value={vaultTo} onChange={(e) => setVaultTo(e.target.value)} />
               </Field>
-              <Field label="Amount">
+              <Field label="Amount" hint="SUPRA">
                 <input className={inputClass()} value={vaultAmount} onChange={(e) => setVaultAmount(e.target.value)} />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Start"><input className={inputClass()} type="datetime-local" value={vaultStart} onChange={(e) => setVaultStart(e.target.value)} /></Field>
-                <Field label="End"><input className={inputClass()} type="datetime-local" value={vaultEnd} onChange={(e) => setVaultEnd(e.target.value)} /></Field>
+                <Field label="Starts"><input className={inputClass()} type="datetime-local" value={vaultStart} onChange={(e) => setVaultStart(e.target.value)} /></Field>
+                <Field label="Fully unlocked"><input className={inputClass()} type="datetime-local" value={vaultEnd} onChange={(e) => setVaultEnd(e.target.value)} /></Field>
               </div>
               <Button disabled={busy} onClick={() => run('Create vault', () => actions.createVault(provider!, account, vaultTo || account, toAmount(vaultAmount), dateToUnix(vaultStart), dateToUnix(vaultEnd)))}>
                 Create vault <ShieldCheck className="h-4 w-4" />
@@ -320,23 +351,20 @@ function OathlockApp() {
                 <div className="rounded-2xl bg-black/20 p-4">Claimed<br /><strong>{share.claimed}</strong></div>
                 <div className="rounded-2xl bg-black/20 p-4">Yours now<br /><strong>{share.entitled}</strong></div>
               </div>
-            ) : <p className="mt-4 text-sm text-muted-foreground">No team share on this wallet yet.</p>}
+            ) : <p className="mt-4 text-sm text-muted-foreground">No vesting share found for this wallet yet.</p>}
             <Button className="mt-4" disabled={busy} onClick={() => run('Claim share', () => actions.claimShare(provider!, account, account, '1'))}>Claim vested share</Button>
           </div>
         </section>
 
         <section id="names" className="rounded-[28px] border border-white/10 bg-white/5 p-5">
           <h2 className="text-xl font-semibold">On-chain names</h2>
-          <p className="mb-4 text-sm text-muted-foreground">Register a handle, list it, buy it, or send it. Fields stay empty until you type.</p>
+          <p className="mb-4 text-sm text-muted-foreground">Look up a name, buy it, list it, or send it. Nothing is prefilled.</p>
           <div className="grid gap-4 md:grid-cols-[1fr_auto]">
             <Field label="Name">
               <input className={inputClass()} placeholder="yourname" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} />
             </Field>
             <div className="flex items-end gap-2">
-              <Button variant="secondary" onClick={async () => {
-                if (!name.trim()) return;
-                setNameResult(await lookupName(name));
-              }}>Look up</Button>
+              <Button variant="secondary" onClick={async () => { if (name.trim()) setNameResult(await lookupName(name)); }}>Look up</Button>
               <Button disabled={busy} onClick={() => run('Register name', () => actions.registerName(provider!, account, name.trim().toLowerCase()))}>Register</Button>
             </div>
           </div>
@@ -344,9 +372,9 @@ function OathlockApp() {
             <div className="mt-4 rounded-2xl border border-white/10 p-4 text-sm">
               <p>{nameResult.available ? `${nameResult.name} is free.` : `${nameResult.name} is owned by ${shortAddress(nameResult.owner || '')}${nameResult.listed ? ` · listed for ${nameResult.price} SUPRA` : ''}`}</p>
               {!nameResult.available && (
-                <div className="mt-3 space-y-2 text-muted-foreground">
+                <div className="mt-3 space-y-1 text-muted-foreground">
                   <p>How to use this name</p>
-                  <p>1. Register or buy it. 2. List a sale price if you want someone else to take it. 3. Send it only to a wallet you trust. The name lives on-chain; this site does not hold it.</p>
+                  <p>Register or buy it. List a price if you want to sell. Send it only to a wallet you trust. The name lives on-chain; this site does not hold it.</p>
                 </div>
               )}
             </div>
@@ -365,13 +393,16 @@ function OathlockApp() {
               <Button variant="ghost" disabled={busy || !transferTo} onClick={() => run('Transfer name', () => actions.transferName(provider!, account, name.trim().toLowerCase(), transferTo))}>Send</Button>
             </div>
           </div>
-          {ownedName ? <p className="mt-3 text-xs text-emerald-300">This wallet owns {nameResult?.name}.</p> : null}
         </section>
 
         <section id="token" className="rounded-[28px] border border-white/10 bg-white/5 p-5">
           <h2 className="text-xl font-semibold">OATH token</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Fees stay at zero until Atmos lists OATH. Contract placeholder: {OATH_TOKEN_CONTRACT === 'OATH_TOKEN_ADDRESS_PENDING' ? 'not set yet' : OATH_TOKEN_CONTRACT}</p>
-          <a className="mt-3 inline-flex items-center gap-2 text-sm text-[hsl(var(--primary))]" href="https://atmos.ag" target="_blank" rel="noreferrer">Atmos <ExternalLink className="h-3.5 w-3.5" /></a>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Fees stay at zero until Atmos lists OATH. Contract placeholder: {OATH_TOKEN_CONTRACT === 'OATH_TOKEN_ADDRESS_PENDING' ? 'not set yet' : OATH_TOKEN_CONTRACT}
+          </p>
+          <a className="mt-3 inline-flex items-center gap-2 text-sm text-[hsl(var(--primary))]" href="https://atmos.ag" target="_blank" rel="noreferrer">
+            Atmos <ExternalLink className="h-3.5 w-3.5" />
+          </a>
         </section>
       </main>
     </div>

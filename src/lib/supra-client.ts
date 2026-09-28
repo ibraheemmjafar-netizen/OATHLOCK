@@ -159,9 +159,7 @@ async function tokenCatalog() {
       faAddress: item.faAddress ? String(item.faAddress) : null,
     }));
   } catch {
-    tokenCache = [
-      { symbol: 'SUPRA', decimals: 8, coinAddress: COIN, faAddress: SUPRA_META },
-    ];
+    tokenCache = [{ symbol: 'SUPRA', decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
   }
   return tokenCache;
 }
@@ -191,8 +189,8 @@ async function faBalance(owner: string, metadata: string) {
 
 function pushUnique(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n) return;
-  const key = item.fa || item.coinType || item.type;
-  if (list.some((row) => (row.fa || row.coinType || row.type) === key)) return;
+  const key = `${item.fa || ''}|${item.coinType || item.type}`;
+  if (list.some((row) => `${row.fa || ''}|${row.coinType || row.type}` === key)) return;
   list.push(item);
 }
 
@@ -249,7 +247,7 @@ export async function loadWalletData(account: string) {
       }
     }
   } catch {
-    // ignore scanner failures; catalog probes still ran
+    // catalog probes still ran
   }
 
   if (!coins.length) {
@@ -267,9 +265,9 @@ export async function loadWalletData(account: string) {
 export async function loadLocks(account: string): Promise<LockRecord[]> {
   const out: LockRecord[] = [];
   for (const [mod, kind, types] of [
-    ['fa_lock', 'Token lock', []],
+    ['fa_lock', 'Token lock', [] as string[]],
     ['lock', 'Coin lock', [COIN]],
-    ['dexlyn_lp', 'Dexlyn LP', []],
+    ['dexlyn_lp', 'Dexlyn LP', [] as string[]],
   ] as Array<[string, string, string[]]>) {
     try {
       const countRaw = await view(`${PKG}::${mod}::next_id`, types, [account]).catch(() => null);
@@ -278,14 +276,13 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
         try {
           const preview = await view(`${PKG}::${mod}::preview`, types, [account, String(id)]);
           const row = Array.isArray(preview) ? preview : [];
-          const amount = String(row[2] ?? row[1] ?? '0');
+          const amount = String(row[2] ?? '0');
           if (amount === '0') continue;
-          const unlock = Number(row[1] ?? row[2] ?? 0);
           out.push({
             id: String(id),
             kind,
             amount: formatAmount(amount),
-            unlock,
+            unlock: Number(row[1] ?? 0),
             ready: row[3] === true || row[3] === 'true',
           });
         } catch {
@@ -293,7 +290,7 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
         }
       }
     } catch {
-      // module may not have next_id
+      // module may not expose next_id
     }
   }
   return out;
