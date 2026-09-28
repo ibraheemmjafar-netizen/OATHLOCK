@@ -274,7 +274,7 @@ function OathlockApp() {
                   <Clock3 className="h-4 w-4" /> 3 minute test lock
                 </Button>
                 <Button variant="secondary" disabled={busy} onClick={() => run('Prepare SUPRA', () => actions.migrate(provider!, account))}>Prepare SUPRA</Button>
-                <Button disabled={busy || !selectedToken} onClick={() => run('Lock token', () => actions.lockToken(provider!, account, selectedToken!.fa || selectedToken!.type, toAmount(amount, selectedToken!.decimals), dateToUnix(unlock)))}>
+                <Button disabled={busy || !selectedToken} onClick={() => run('Lock token', () => actions.lockToken(provider!, account, selectedToken!, toAmount(amount, selectedToken!.decimals), dateToUnix(unlock)))}>
                   Lock {selectedToken?.symbol || 'token'} <ArrowUpRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -337,7 +337,19 @@ function OathlockApp() {
               <input className={inputClass()} type="datetime-local" value={lpUnlock} onChange={(e) => setLpUnlock(e.target.value)} />
             </Field>
             <div className="flex items-end">
-              <Button disabled={busy || lpX === lpY} onClick={() => run('Add LP and lock', () => actions.lockLp(provider!, account, lpX, lpY, toAmount(lpAx), toAmount(lpAy), dateToUnix(lpUnlock)))}>
+              <Button disabled={busy || lpX === lpY} onClick={() => {
+                const xTok = dexCoins.find((item) => item.coinType === lpX);
+                const yTok = dexCoins.find((item) => item.coinType === lpY);
+                return run('Add LP and lock', () => actions.lockLp(
+                  provider!,
+                  account,
+                  lpX,
+                  lpY,
+                  toAmount(lpAx, xTok?.decimals || 8),
+                  toAmount(lpAy, yTok?.decimals || 8),
+                  dateToUnix(lpUnlock),
+                ));
+              }}>
                 Add LP and lock <ArrowUpRight className="h-4 w-4" />
               </Button>
             </div>

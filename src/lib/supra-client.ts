@@ -358,16 +358,41 @@ export async function sendEntry(
     args,
     { txExpiryTime: Math.ceil(Date.now() / 1000) + 600 },
   ]);
-  return provider.sendTransaction({ data, from: account });
+  return provider.sendTransaction({
+    data,
+    from: account,
+    to: '',
+    value: '',
+    chainId: String(CHAIN),
+  });
 }
 
 export const actions = {
   migrate: (provider: Provider, account: string) =>
     sendEntry(provider, account, 'fa_lock', 'ensure_store', [], []),
-  lockToken: (provider: Provider, account: string, metadata: string, amount: string, unlock: number) =>
-    sendEntry(provider, account, 'fa_lock', 'create_lock', [], [bcsAddr(metadata), bcsAddr(account), bcsU64(unlock), bcsU64(amount)]),
+  lockToken: (
+    provider: Provider,
+    account: string,
+    token: { fa?: string; type: string; coinType?: string },
+    amount: string,
+    unlock: number,
+  ) => {
+    if (token.coinType) {
+      return sendEntry(provider, account, 'lock', 'create_lock', [token.coinType], [
+        bcsAddr(account),
+        bcsU64(unlock),
+        bcsU64(amount),
+      ]);
+    }
+    return sendEntry(provider, account, 'fa_lock', 'create_lock', [], [
+      bcsAddr(token.fa || token.type),
+      bcsAddr(account),
+      bcsU64(unlock),
+      bcsU64(amount),
+    ]);
+  },
   lockLp: (provider: Provider, account: string, x: string, y: string, ax: string, ay: string, unlock: number) =>
-    sendEntry(provider, account, 'dexlyn_lp', 'add_and_lock', [x, y, CURVE], [bcsU64(ax), bcsU64(ay), bcsU64(1), bcsU64(1), bcsU64(unlock)]),
+    sendEntry(provider, account, 'dexlyn_lp', 'add_and_lock', [x, y, CURVE], [bcsU64(ax), bcsU64(ay), bcsU64(unlock)]),
   createVault: (provider: Provider, account: string, recipient: string, amount: string, start: number, end: number) =>
     sendEntry(provider, account, 'vesting', 'create_team_vault', [COIN], [bcsAddrVec([recipient]), bcsU64Vec([10000]), bcsU8(1), bcsU64(start), bcsU64(start), bcsU64(end), bcsU64(amount)]),
   claimShare: (provider: Provider, account: string, creator: string, id: string) =>
