@@ -1,5 +1,3 @@
-import { BCS } from 'supra-l1-sdk';
-
 export const PKG = '0x8bf4f925f0a654d7b6715cfb7d3d7e5c3cb6e8907c1a134d80aabc45db64f5fb';
 export const BUILDER = PKG;
 export const RPC = 'https://rpc-mainnet.supra.com';
@@ -87,42 +85,56 @@ function padHex(value: string) {
   return value.replace(/^0x/, '').padStart(64, '0');
 }
 
+function concatBytes(parts: Uint8Array[]) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function uleb128(n: number) {
+  const bytes: number[] = [];
+  let value = n >>> 0;
+  while (value >= 0x80) {
+    bytes.push((value & 0x7f) | 0x80);
+    value >>>= 7;
+  }
+  bytes.push(value);
+  return Uint8Array.from(bytes);
+}
+
 export function bcsU8(n: number) {
-  const s = new BCS.Serializer();
-  s.serializeU8(n);
-  return s.getBytes();
+  return Uint8Array.from([n & 0xff]);
 }
 
 export function bcsU64(n: string | number | bigint) {
-  const s = new BCS.Serializer();
-  s.serializeU64(BigInt(n || 0));
-  return s.getBytes();
+  let value = BigInt(n || 0);
+  const out = new Uint8Array(8);
+  for (let i = 0; i < 8; i += 1) {
+    out[i] = Number(value & 0xffn);
+    value >>= 8n;
+  }
+  return out;
 }
 
 export function bcsStr(value: string) {
-  const s = new BCS.Serializer();
-  s.serializeStr(value);
-  return s.getBytes();
+  const raw = new TextEncoder().encode(value);
+  return concatBytes([uleb128(raw.length), raw]);
 }
 
 export function bcsAddr(value: string) {
-  const s = new BCS.Serializer();
-  s.serializeFixedBytes(Uint8Array.from(padHex(value).match(/.{2}/g)!.map((b) => parseInt(b, 16))));
-  return s.getBytes();
+  return Uint8Array.from(padHex(value).match(/.{2}/g)!.map((b) => parseInt(b, 16)));
 }
 
 export function bcsAddrVec(values: string[]) {
-  const s = new BCS.Serializer();
-  s.serializeU32AsUleb128(values.length);
-  values.forEach((value) => s.serializeFixedBytes(Uint8Array.from(padHex(value).match(/.{2}/g)!.map((b) => parseInt(b, 16)))));
-  return s.getBytes();
+  return concatBytes([uleb128(values.length), ...values.map(bcsAddr)]);
 }
 
 export function bcsU64Vec(values: Array<string | number | bigint>) {
-  const s = new BCS.Serializer();
-  s.serializeU32AsUleb128(values.length);
-  values.forEach((value) => s.serializeU64(BigInt(value || 0)));
-  return s.getBytes();
+  return concatBytes([uleb128(values.length), ...values.map(bcsU64)]);
 }
 
 async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
