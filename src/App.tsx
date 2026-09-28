@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import mascot from '@/assets/oathlock-mascot.png';
 import {
   actions,
+  BUILDER,
   CHAIN,
   COIN,
   dateToUnix,
@@ -78,7 +79,7 @@ function OathlockApp() {
   const [coins, setCoins] = useState<CoinBalance[]>([]);
   const [tokens, setTokens] = useState<CoinBalance[]>([]);
   const [locks, setLocks] = useState<LockRecord[]>([]);
-  const [share, setShare] = useState<{ total: string; vested: string; claimed: string; entitled: string } | null>(null);
+  const [share, setShare] = useState<{ id: string; creator: string; total: string; vested: string; claimed: string; entitled: string } | null>(null);
   const [token, setToken] = useState('0xa');
   const [amount, setAmount] = useState('0.001');
   const [unlock, setUnlock] = useState(initialUnlock);
@@ -386,13 +387,13 @@ function OathlockApp() {
             <h2 className="text-xl font-semibold">Your share</h2>
             {share ? (
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-2xl bg-black/20 p-4">Vault #{share.id}<br /><strong>{shortAddress(share.creator)}</strong></div>
                 <div className="rounded-2xl bg-black/20 p-4">Total<br /><strong>{share.total}</strong></div>
                 <div className="rounded-2xl bg-black/20 p-4">Vested<br /><strong>{share.vested}</strong></div>
-                <div className="rounded-2xl bg-black/20 p-4">Claimed<br /><strong>{share.claimed}</strong></div>
                 <div className="rounded-2xl bg-black/20 p-4">Yours now<br /><strong>{share.entitled}</strong></div>
               </div>
-            ) : <p className="mt-4 text-sm text-muted-foreground">No vesting share found for this wallet yet.</p>}
-            <Button className="mt-4" disabled={busy} onClick={() => run('Claim share', () => actions.claimShare(provider!, account, account, '1'))}>Claim vested share</Button>
+            ) : <p className="mt-4 text-sm text-muted-foreground">This wallet has no share on an Oathlock vault yet. Create the vault from the builder wallet, then connect the recipient wallet.</p>}
+            <Button className="mt-4" disabled={busy || !share} onClick={() => run('Claim share', () => actions.claimShare(provider!, account, share!.creator || BUILDER, share!.id || '0'))}>Claim vested share</Button>
           </div>
         </section>
 
@@ -412,9 +413,11 @@ function OathlockApp() {
             <div className="mt-4 rounded-2xl border border-white/10 p-4 text-sm">
               <p>{nameResult.available ? `${nameResult.name} is free.` : `${nameResult.name} is owned by ${shortAddress(nameResult.owner || '')}${nameResult.listed ? ` · listed for ${nameResult.price} SUPRA` : ''}`}</p>
               {!nameResult.available && (
-                <div className="mt-3 space-y-1 text-muted-foreground">
-                  <p>How to use this name</p>
-                  <p>Register or buy it. List a price if you want to sell. Send it only to a wallet you trust. The name lives on-chain; this site does not hold it.</p>
+                <div className="mt-3 space-y-2 text-muted-foreground">
+                  <p className="text-foreground">How to use {nameResult.name}</p>
+                  <p>This is an on-chain handle owned by a wallet. People can look it up here to see who owns it and whether it is for sale.</p>
+                  <p>It is not a bank account. You cannot send SUPRA to <span className="text-foreground">{nameResult.name}.supra</span> yet. Payments still go to the 0x wallet that owns the name.</p>
+                  <p>Use it as your public tag, list it if you want to sell, or send the name to another 0x address. Keep the 0x address for actual transfers.</p>
                 </div>
               )}
             </div>

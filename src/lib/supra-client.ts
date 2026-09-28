@@ -274,6 +274,27 @@ export async function loadWalletData(account: string) {
   return { coins, tokens };
 }
 
+function parseCoinType(type: string) {
+  const parts = type.replace(/^0x/, '').split('::');
+  return {
+    address: (parts[0] || '').padStart(64, '0'),
+    module: parts[1] || '',
+    struct: parts[2] || '',
+  };
+}
+
+export function sortDexlynPair(x: string, y: string, ax: string, ay: string) {
+  const a = parseCoinType(x);
+  const b = parseCoinType(y);
+  const cmp = a.struct === b.struct
+    ? a.module === b.module
+      ? a.address < b.address ? -1 : 1
+      : a.module < b.module ? -1 : 1
+    : a.struct < b.struct ? -1 : 1;
+  if (cmp < 0) return { x, y, ax, ay };
+  return { x: y, y: x, ax: ay, ay: ax };
+}
+
 export async function loadLocks(account: string): Promise<LockRecord[]> {
   const out: LockRecord[] = [];
   for (const [mod, kind, types] of [
@@ -281,46 +302,46 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
     ['lock', 'Coin lock', [COIN]],
     ['dexlyn_lp', 'Dexlyn LP', [] as string[]],
   ] as Array<[string, string, string[]]>) {
-    try {
-      const countRaw = await view(`${PKG}::${mod}::next_id`, types, [account]).catch(() => null);
-      const count = Number(Array.isArray(countRaw) ? countRaw[0] : countRaw || 0);
-      for (let id = 0; id < Math.min(count, 12); id += 1) {
-        try {
-          const preview = await view(`${PKG}::${mod}::preview`, types, [account, String(id)]);
-          const row = Array.isArray(preview) ? preview : [];
-          const amount = String(row[2] ?? '0');
-          if (amount === '0') continue;
-          out.push({
-            id: String(id),
-            kind,
-            amount: formatAmount(amount),
-            unlock: Number(row[1] ?? 0),
-            ready: row[3] === true || row[3] === 'true',
-          });
-        } catch {
-          break;
-        }
+    for (let id = 0; id < 16; id += 1) {
+      try {
+        const preview = await view(`${PKG}::${mod}::preview`, types, [account, String(id)]);
+        const row = Array.isArray(preview) ? preview : [];
+        const amount = String(row[2] ?? '0');
+        if (!amount || amount === '0') continue;
+        out.push({
+          id: String(id),
+          kind,
+          amount: formatAmount(amount),
+          unlock: Number(row[1] ?? 0),
+          ready: row[3] === true || row[3] === 'true',
+        });
+      } catch {
+        continue;
       }
-    } catch {
-      // module may not expose next_id
     }
   }
   return out;
 }
 
-export async function loadShare(account: string) {
-  try {
-    const result = await view(`${PKG}::vesting::preview_share`, [COIN], [BUILDER, '1', account]);
-    const row = Array.isArray(result) ? result : [];
-    return {
-      total: formatAmount(row[0] || 0),
-      vested: formatAmount(row[1] || 0),
-      claimed: formatAmount(row[2] || 0),
-      entitled: formatAmount(row[3] || 0),
-    };
-  } catch {
-    return null;
+export async function loadShare(account: string, creator = BUILDER) {
+  for (const id of ['0', '1', '2', '3']) {
+    try {
+      const result = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, id, account]);
+      const row = Array.isArray(result) ? result : [];
+      if (!row.length) continue;
+      return {
+        id,
+        creator,
+        total: formatAmount(row[0] || 0),
+        vested: formatAmount(row[1] || 0),
+        claimed: formatAmount(row[2] || 0),
+        entitled: formatAmount(row[3] || 0),
+      };
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 export async function lookupName(name: string): Promise<NameResult> {
@@ -391,8 +412,10 @@ export const actions = {
       bcsU64(amount),
     ]);
   },
-  lockLp: (provider: Provider, account: string, x: string, y: string, ax: string, ay: string, unlock: number) =>
-    sendEntry(provider, account, 'dexlyn_lp', 'add_and_lock', [x, y, CURVE], [bcsU64(ax), bcsU64(ay), bcsU64(unlock)]),
+  lockLp: (provider: Provider, account: string, x: string, y: string, ax: string, ay: string, unlock: number) => {
+    const pair = sortDexlynPair(x, y, ax, ay);
+    return sendEntry(provider, account, 'dexlyn_lp', 'add_and_lock', [pair.x, pair.y, CURVE], [bcsU64(pair.ax), bcsU64(pair.ay), bcsU64(unlock)]);
+  },
   createVault: (provider: Provider, account: string, recipient: string, amount: string, start: number, end: number) =>
     sendEntry(provider, account, 'vesting', 'create_team_vault', [COIN], [bcsAddrVec([recipient]), bcsU64Vec([10000]), bcsU8(1), bcsU64(start), bcsU64(start), bcsU64(end), bcsU64(amount)]),
   claimShare: (provider: Provider, account: string, creator: string, id: string) =>
