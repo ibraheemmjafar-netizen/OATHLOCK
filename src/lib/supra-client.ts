@@ -356,7 +356,7 @@ export async function sendEntry(
     fn,
     typeArgs,
     args,
-    { txExpiryTime: Math.ceil(Date.now() / 1000) + 45 },
+    { txExpiryTime: Math.ceil(Date.now() / 1000) + 600 },
   ]);
   return provider.sendTransaction({ data, from: account });
 }

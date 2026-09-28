@@ -136,13 +136,21 @@ function OathlockApp() {
     if (account) void refresh(account);
   }, [account, refresh]);
 
+  function isAddr(value: string) {
+    return /^0x[0-9a-fA-F]{1,64}$/.test(value.trim());
+  }
+
   async function run(label: string, work: () => Promise<string | void>) {
     if (!provider || !account) {
       setNotice({ tone: 'error', text: 'Connect StarKey first.' });
       return;
     }
+    if (busy) {
+      setNotice({ tone: 'error', text: 'StarKey still has an open request. Deny the old cards, then try once.' });
+      return;
+    }
     setBusy(true);
-    setNotice({ tone: 'neutral', text: `${label} — approve in StarKey.` });
+    setNotice({ tone: 'neutral', text: `${label} — approve the latest StarKey card within 10 minutes.` });
     try {
       const hash = await work();
       setNotice({ tone: 'success', text: hash ? `${label} submitted ${shortAddress(String(hash))}` : `${label} done.` });
@@ -351,7 +359,13 @@ function OathlockApp() {
                 <Field label="Starts"><input className={inputClass()} type="datetime-local" value={vaultStart} onChange={(e) => setVaultStart(e.target.value)} /></Field>
                 <Field label="Fully unlocked"><input className={inputClass()} type="datetime-local" value={vaultEnd} onChange={(e) => setVaultEnd(e.target.value)} /></Field>
               </div>
-              <Button disabled={busy} onClick={() => run('Create vault', () => actions.createVault(provider!, account, vaultTo || account, toAmount(vaultAmount), dateToUnix(vaultStart), dateToUnix(vaultEnd)))}>
+              <Button disabled={busy} onClick={() => {
+                if (!isAddr(vaultTo || account)) {
+                  setNotice({ tone: 'error', text: 'Who gets it must be a 0x wallet, not a name like ibraheem.supra.' });
+                  return;
+                }
+                return run('Create vault', () => actions.createVault(provider!, account, vaultTo || account, toAmount(vaultAmount), dateToUnix(vaultStart), dateToUnix(vaultEnd)));
+              }}>
                 Create vault <ShieldCheck className="h-4 w-4" />
               </Button>
             </div>
