@@ -158,21 +158,35 @@ function OathlockApp() {
   const firstCoin = coinOptions.find((item) => (item.coinType || item.type) === lpA) || coinOptions[0];
   const secondCoin = coinOptions.find((item) => (item.coinType || item.type) === lpB) || coinOptions[1] || coinOptions[0];
 
-  const refresh = useCallback(async (addr = account) => {
+  const refresh = useCallback(async (addr = account, creator = vaultCreator) => {
     if (!addr) return;
-    const data = await loadWalletData(addr);
-    setCoins(data.coins);
-    setTokens(data.tokens);
-    if (!tokenKey && data.coins[0]) setTokenKey(data.coins[0].coinType || data.coins[0].type);
-    if (!lpA && data.coins[0]) setLpA(data.coins[0].coinType || data.coins[0].type);
-    if (!lpB && (data.coins[1] || data.coins[0])) setLpB((data.coins[1] || data.coins[0]).coinType || (data.coins[1] || data.coins[0]).type);
-    setLocks(await loadLocks(addr));
-    setShare(await loadShare(addr, vaultCreator));
-  }, [account, tokenKey, lpA, lpB, vaultCreator]);
+    const basics = await loadWalletBasics(addr);
+    setCoins(basics.coins);
+    setTokens(basics.tokens);
+    try {
+      const nextLocks = await loadLocks(addr);
+      if (nextLocks.length) setLocks(nextLocks);
+    } catch {
+      // keep whatever locks are already on screen
+    }
+    try {
+      setShare(await loadShare(addr, creator));
+    } catch {
+      // keep current share card
+    }
+    try {
+      const extra = await loadWalletExtras(addr, basics.coins);
+      setCoins(extra.coins);
+      setTokens(extra.tokens);
+    } catch {
+      // SUPRA already shown
+    }
+  }, [account, vaultCreator]);
 
   useEffect(() => {
-    if (account) refresh(account).catch((err) => setNotice({ tone: "error", text: String(err.message || err) }));
-  }, [account, refresh]);
+    if (account) refresh(account, vaultCreator).catch((err) => setNotice({ tone: "error", text: String(err.message || err) }));
+  }, [account, refresh, vaultCreator]);
+
 
   async function run(label: string, fn: () => Promise<unknown>) {
     if (busy) {

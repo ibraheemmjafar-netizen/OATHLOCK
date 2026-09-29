@@ -141,72 +141,21 @@ async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
   const body = { function: fn, type_arguments: typeArgs, arguments: args };
   let last = "";
   for (const path of ["/rpc/v3/view", "/rpc/v2/view", "/rpc/v1/view"]) {
-    const res = await fetch(RPC + path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json();
-    const result = json.result || json.Result || json.response?.result;
-    if (Array.isArray(result)) return result;
-    last = json.message || json.err || JSON.stringify(json).slice(0, 160);
-  }
-  throw new Error(last || "View failed");
-}
-
-async function accountResources(address: string) {
-  const out: unknown[] = [];
-  let url = `${RPC}/rpc/v1/accounts/${address}/resources`;
-  for (let page = 0; page < 8; page += 1) {
-    const res = await fetch(url);
-    const json = await res.json();
-    const rows = json.Resources?.resource || json.resources || json.result || [];
-    out.push(...rows);
-    const cursor = json.Resources?.cursor || json.cursor;
-    if (!cursor) break;
-    url = `${RPC}/rpc/v1/accounts/${address}/resources?cursor=${encodeURIComponent(cursor)}`;
-  }
-  return out;
-}
-
-let tokenCache: TokenMeta[] | null = null;
-async function tokenCatalog() {
-  if (tokenCache) return tokenCache;
-  try {
-    const list = await fetch(TOKEN_LIST).then((r) => r.json());
-    tokenCache = (list as Array<Record<string, unknown>>).map((item) => ({
-      symbol: String(item.officialSymbol || item.symbol || "TOKEN"),
-      decimals: Number(item.decimals || 8),
-      coinAddress: item.coinAddress ? String(item.coinAddress) : null,
-      faAddress: item.faAddress ? String(item.faAddress) : null,
-    }));
-  } catch {
-    tokenCache = [{ symbol: "SUPRA", decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
-  }
-  return tokenCache;
-}
-
-async function coinBalance(owner: string, coinType: string) {
-  try {
-    const result = await view("0x1::coin::balance", [coinType], [owner]);
-    return BigInt(Array.isArray(result) ? result[0] : result || 0);
-  } catch {
-    return 0n;
-  }
-}
-
-async function faBalance(owner: string, metadata: string) {
-  try {
-    const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
-    return BigInt(Array.isArray(result) ? result[0] : result || 0);
-  } catch {
     try {
-      const result = await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [owner, metadata]);
-      return BigInt(Array.isArray(result) ? result[0] : result || 0);
-    } catch {
-      return 0n;
+      const res = await fetch(RPC + path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      const result = json.result || json.Result || json.response?.result;
+      if (Array.isArray(result)) return result;
+      last = json.message || json.err || JSON.stringify(json).slice(0, 160);
+    } catch (err) {
+      last = String(err);
     }
   }
+  throw new Error(last || "View failed");
 }
 
 function pushHeld(list: CoinBalance[], item: CoinBalance) {
@@ -227,28 +176,50 @@ function pushHeld(list: CoinBalance[], item: CoinBalance) {
   list.push(item);
 }
 
-export async function loadWalletData(account: string) {
-  const owner = account.startsWith("0x") ? account : `0x${account}`;
-  const catalog = await tokenCatalog();
-  const coins: CoinBalance[] = [];
-  const tokens: CoinBalance[] = [];
-
-  const supraCoin = await coinBalance(owner, COIN);
-  pushHeld(coins, {
-    symbol: "SUPRA",
-    type: COIN,
-    coinType: COIN,
-    fa: SUPRA_META,
-    decimals: 8,
-    amount: formatAmount(supraCoin),
-    raw: supraCoin,
-  });
-
+async function coinBalance(owner: string, coinType: string) {
   try {
-    const resources = await accountResources(owner);
-    for (const row of resources) {
-      const type = Array.isArray(row) ? String((row as unknown[])[0] || "") : String((row as { type?: string }).type || "");
-      const data = Array.isArray(row) ? (row as unknown[])[1] as { coin?: { value?: string } } : (row as { data?: { coin?: { value?: string } } }).data;
+    const result = await view("0x1::coin::balance", [coinType], [owner]);
+    return BigInt(Array.isArray(result) ? result[0] : result || 0);
+  } catch {
+    return 0n;
+  }
+}
+
+async function faBalance(owner: string, metadata: string) {
+  try {
+    const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
+    return BigInt(Array.isArray(result) ? result[0] : result || 0);
+  } catch {
+    return 0n;
+  }
+}
+
+let tokenCache: TokenMeta[] | null = null;
+async function tokenCatalog() {
+  if (tokenCache) return tokenCache;
+  try {
+    const list = await fetch(TOKEN_LIST).then((r) => r.json());
+    tokenCache = (list as Array<Record<string, unknown>>).map((item) => ({
+      symbol: String(item.officialSymbol || item.symbol || "TOKEN"),
+      decimals: Number(item.decimals || 8),
+      coinAddress: item.coinAddress ? String(item.coinAddress) : null,
+      faAddress: item.faAddress ? String(item.faAddress) : null,
+    }));
+  } catch {
+    tokenCache = [{ symbol: "SUPRA", decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
+  }
+  return tokenCache;
+}
+
+async function readCoinStores(owner: string, catalog: TokenMeta[], coins: CoinBalance[]) {
+  let url = `${RPC}/rpc/v1/accounts/${owner}/resources`;
+  for (let page = 0; page < 8; page += 1) {
+    const res = await fetch(url);
+    const json = await res.json();
+    const rows = json.Resources?.resource || json.resources || json.result || [];
+    for (const row of rows) {
+      const type = Array.isArray(row) ? String(row[0] || "") : String(row.type || "");
+      const data = Array.isArray(row) ? row[1] : row.data;
       const match = type.match(/coin::CoinStore<(.+)>/);
       if (!match) continue;
       let coinType = match[1];
@@ -265,10 +236,40 @@ export async function loadWalletData(account: string) {
         raw,
       });
     }
-  } catch {
-    // keep the SUPRA probe
+    const cursor = json.Resources?.cursor || json.cursor;
+    if (!cursor) break;
+    url = `${RPC}/rpc/v1/accounts/${owner}/resources?cursor=${encodeURIComponent(cursor)}`;
   }
+}
 
+export async function loadWalletBasics(account: string) {
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
+  const catalog = await tokenCatalog();
+  const coins: CoinBalance[] = [];
+  const supraCoin = await coinBalance(owner, COIN);
+  pushHeld(coins, {
+    symbol: "SUPRA",
+    type: COIN,
+    coinType: COIN,
+    fa: SUPRA_META,
+    decimals: 8,
+    amount: formatAmount(supraCoin),
+    raw: supraCoin,
+  });
+  try {
+    await readCoinStores(owner, catalog, coins);
+  } catch {
+    // keep SUPRA
+  }
+  coins.sort((a, b) => Number(b.raw - a.raw));
+  return { coins, tokens: [...coins] };
+}
+
+export async function loadWalletExtras(account: string, already: CoinBalance[]) {
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
+  const catalog = await tokenCatalog();
+  const coins = [...already];
+  const tokens = [...already];
   await Promise.all(catalog.map(async (item) => {
     if (item.coinAddress && item.coinAddress !== COIN) {
       const raw = await coinBalance(owner, item.coinAddress);
@@ -295,10 +296,18 @@ export async function loadWalletData(account: string) {
       });
     }
   }));
-
   coins.sort((a, b) => Number(b.raw - a.raw));
   tokens.sort((a, b) => Number(b.raw - a.raw));
   return { coins, tokens };
+}
+
+export async function loadWalletData(account: string) {
+  const basics = await loadWalletBasics(account);
+  try {
+    return await loadWalletExtras(account, basics.coins);
+  } catch {
+    return basics;
+  }
 }
 
 function parseCoinType(type: string) {
@@ -351,41 +360,38 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
 }
 
 export async function loadShare(account: string, extraCreator = "") {
-  const owners = Array.from(new Set([extraCreator, account, BUILDER].filter(Boolean)));
-  for (const creator of owners) {
-    for (const fn of ["team_vault_count", "vault_count"] as const) {
-      try {
-        const raw = await view(`${PKG}::vesting::${fn}`, [COIN], [creator]);
-        const count = Math.min(Number(raw?.[0] || 0), 12);
-        for (let id = 0; id < Math.max(count, 4); id += 1) {
-          try {
-            const row = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), account]);
-            if (!row?.length) continue;
-            return {
-              id: String(id),
-              creator,
-              total: formatAmount(row[0] || 0),
-              vested: formatAmount(row[1] || 0),
-              claimed: formatAmount(row[2] || 0),
-              entitled: formatAmount(row[3] || 0),
-            };
-          } catch {
-            try {
-              const row = await view(`${PKG}::vesting::preview`, [COIN], [creator, String(id)]);
-              if (!row?.length) continue;
-              return {
-                id: String(id),
-                creator,
-                total: formatAmount(row[0] || 0),
-                vested: formatAmount(row[2] || 0),
-                claimed: formatAmount(row[1] || 0),
-                entitled: formatAmount(row[2] || 0),
-              };
-            } catch {
-              continue;
-            }
-          }
+  const addrs = Array.from(new Set([account, extraCreator, BUILDER].filter(Boolean)));
+  for (const creator of addrs) {
+    for (let id = 0; id < 8; id += 1) {
+      for (const who of addrs) {
+        try {
+          const row = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
+          if (!row?.length) continue;
+          return {
+            id: String(id),
+            creator,
+            beneficiary: who,
+            total: formatAmount(row[0] || 0),
+            vested: formatAmount(row[1] || 0),
+            claimed: formatAmount(row[2] || 0),
+            entitled: formatAmount(row[3] || 0),
+          };
+        } catch {
+          continue;
         }
+      }
+      try {
+        const row = await view(`${PKG}::vesting::preview`, [COIN], [creator, String(id)]);
+        if (!row?.length) continue;
+        return {
+          id: String(id),
+          creator,
+          beneficiary: String(row[3] || creator),
+          total: formatAmount(row[0] || 0),
+          vested: formatAmount(row[2] || 0),
+          claimed: formatAmount(row[1] || 0),
+          entitled: formatAmount(row[2] || 0),
+        };
       } catch {
         continue;
       }
