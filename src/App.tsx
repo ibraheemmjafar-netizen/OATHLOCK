@@ -8,7 +8,6 @@ import {
   LockKeyhole,
   Menu,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
   Wallet,
   X,
@@ -20,10 +19,10 @@ import {
   BUILDER,
   CHAIN,
   dateToUnix,
-  formatAmount,
   loadLocks,
   loadShare,
-  loadWalletData,
+  loadWalletBasics,
+  loadWalletExtras,
   lookupName,
   shortAddress,
   toAmount,
@@ -163,16 +162,22 @@ function OathlockApp() {
     const basics = await loadWalletBasics(addr);
     setCoins(basics.coins);
     setTokens(basics.tokens);
+    if (!tokenKey && basics.coins[0]) setTokenKey(basics.coins[0].coinType || basics.coins[0].type);
+    if (!lpA && basics.coins[0]) setLpA(basics.coins[0].coinType || basics.coins[0].type);
+    if (!lpB && (basics.coins[1] || basics.coins[0])) {
+      const next = basics.coins[1] || basics.coins[0];
+      setLpB(next.coinType || next.type);
+    }
     try {
       const nextLocks = await loadLocks(addr);
       if (nextLocks.length) setLocks(nextLocks);
     } catch {
-      // keep whatever locks are already on screen
+      // keep current locks
     }
     try {
       setShare(await loadShare(addr, creator));
     } catch {
-      // keep current share card
+      // keep current share
     }
     try {
       const extra = await loadWalletExtras(addr, basics.coins);
@@ -181,12 +186,13 @@ function OathlockApp() {
     } catch {
       // SUPRA already shown
     }
-  }, [account, vaultCreator]);
+  }, [account, vaultCreator, tokenKey, lpA, lpB]);
 
   useEffect(() => {
-    if (account) refresh(account, vaultCreator).catch((err) => setNotice({ tone: "error", text: String(err.message || err) }));
-  }, [account, refresh, vaultCreator]);
-
+    if (account) {
+      refresh(account, vaultCreator).catch((err) => setNotice({ tone: "error", text: String((err as Error).message || err) }));
+    }
+  }, [account, vaultCreator]);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     if (busy) {
@@ -323,7 +329,7 @@ function OathlockApp() {
                   <option key={item.coinType || item.fa || item.type} value={item.coinType || item.fa || item.type}>
                     {item.symbol} · {item.amount}
                   </option>
-                )) : <option value="">Connect to load tokens</option>}
+                )) : <option value="">{account ? "Loading tokens…" : "Connect to load tokens"}</option>}
               </select>
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -467,13 +473,13 @@ function OathlockApp() {
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
             <p className="mb-4 text-sm text-white/50">
-              The vault lives on the creator wallet. Connect the recipient, paste the creator 0x, then find the share.
+              Paste the creator wallet or the recipient wallet. The site checks both.
             </p>
-            <Field label="Vault created by" hint="Creator 0x">
+            <Field label="Vault created by" hint="Creator or recipient 0x">
               <input
                 className={inputClass()}
                 value={vaultCreator}
-                placeholder="Paste the wallet that created the vault"
+                placeholder="0x of creator or recipient"
                 onChange={(e) => saveCreator(e.target.value.trim())}
               />
             </Field>
@@ -504,7 +510,6 @@ function OathlockApp() {
           <p className="mb-4 max-w-3xl text-sm text-white/55">
             A name is a public handle stored on Oathlock, like a username. It is not a payment address yet.
             People cannot send SUPRA to <b>oathlock.supra</b>. They look the name up here, see the owner 0x, then send to that wallet.
-            You can list it, buy a listed name, or transfer the name to another 0x.
           </p>
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
             <Field label="Name">
