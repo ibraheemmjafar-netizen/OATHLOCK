@@ -162,12 +162,9 @@ function OathlockApp() {
     const basics = await loadWalletBasics(addr);
     setCoins(basics.coins);
     setTokens(basics.tokens);
-    if (!tokenKey && basics.coins[0]) setTokenKey(basics.coins[0].coinType || basics.coins[0].type);
-    if (!lpA && basics.coins[0]) setLpA(basics.coins[0].coinType || basics.coins[0].type);
-    if (!lpB && (basics.coins[1] || basics.coins[0])) {
-      const next = basics.coins[1] || basics.coins[0];
-      setLpB(next.coinType || next.type);
-    }
+    setTokenKey((current) => current || (basics.coins[0]?.coinType || basics.coins[0]?.type || ""));
+    setLpA((current) => current || (basics.coins[0]?.coinType || basics.coins[0]?.type || ""));
+    setLpB((current) => current || ((basics.coins[1] || basics.coins[0])?.coinType || (basics.coins[1] || basics.coins[0])?.type || ""));
     try {
       const nextLocks = await loadLocks(addr);
       if (nextLocks.length) setLocks(nextLocks);
@@ -186,13 +183,13 @@ function OathlockApp() {
     } catch {
       // SUPRA already shown
     }
-  }, [account, vaultCreator, tokenKey, lpA, lpB]);
+  }, [account, vaultCreator]);
 
   useEffect(() => {
     if (account) {
       refresh(account, vaultCreator).catch((err) => setNotice({ tone: "error", text: String((err as Error).message || err) }));
     }
-  }, [account, vaultCreator]);
+  }, [account, vaultCreator, refresh]);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     if (busy) {

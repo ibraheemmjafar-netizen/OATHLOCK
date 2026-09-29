@@ -44,6 +44,16 @@ export type NameResult = {
   price?: string;
 };
 
+export type Share = {
+  id: string;
+  creator: string;
+  beneficiary: string;
+  total: string;
+  vested: string;
+  claimed: string;
+  entitled: string;
+};
+
 type TokenMeta = {
   symbol: string;
   decimals: number;
@@ -137,6 +147,17 @@ export function bcsU64Vec(values: Array<string | number | bigint>) {
   return concatBytes([uleb128(values.length), ...values.map(bcsU64)]);
 }
 
+function normalizeAddr(part: string) {
+  const hex = part.replace(/^0x/, "").replace(/^0+/, "") || "0";
+  return `0x${hex}`;
+}
+
+function normalizeCoinType(type: string) {
+  const parts = type.replace(/^0x/, "").split("::");
+  if (parts.length < 3) return type.startsWith("0x") ? type : `0x${type}`;
+  return `${normalizeAddr(parts[0])}::${parts[1]}::${parts[2]}`;
+}
+
 async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
   const body = { function: fn, type_arguments: typeArgs, arguments: args };
   let last = "";
@@ -150,7 +171,7 @@ async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
       const json = await res.json();
       const result = json.result || json.Result || json.response?.result;
       if (Array.isArray(result)) return result;
-      last = json.message || json.err || JSON.stringify(json).slice(0, 160);
+      last = String(json.message || json.err || "");
     } catch (err) {
       last = String(err);
     }
@@ -162,8 +183,7 @@ function pushHeld(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n) return;
   const same = list.findIndex((row) =>
     (item.coinType && row.coinType === item.coinType) ||
-    (item.fa && row.fa === item.fa) ||
-    row.symbol.toLowerCase() === item.symbol.toLowerCase()
+    (item.fa && row.fa === item.fa)
   );
   if (same >= 0) {
     if (item.raw > list[same].raw) list[same] = { ...list[same], ...item };
@@ -178,7 +198,7 @@ function pushHeld(list: CoinBalance[], item: CoinBalance) {
 
 async function coinBalance(owner: string, coinType: string) {
   try {
-    const result = await view("0x1::coin::balance", [coinType], [owner]);
+    const result = await view("0x1::coin::balance", [normalizeCoinType(coinType)], [owner]);
     return BigInt(Array.isArray(result) ? result[0] : result || 0);
   } catch {
     return 0n;
@@ -187,7 +207,11 @@ async function coinBalance(owner: string, coinType: string) {
 
 async function faBalance(owner: string, metadata: string) {
   try {
-    const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
+    const result = await view(
+      "0x1::primary_fungible_store::balance",
+      ["0x1::fungible_asset::Metadata"],
+      [owner, metadata],
+    );
     return BigInt(Array.isArray(result) ? result[0] : result || 0);
   } catch {
     return 0n;
@@ -202,30 +226,64 @@ async function tokenCatalog() {
     tokenCache = (list as Array<Record<string, unknown>>).map((item) => ({
       symbol: String(item.officialSymbol || item.symbol || "TOKEN"),
       decimals: Number(item.decimals || 8),
-      coinAddress: item.coinAddress ? String(item.coinAddress) : null,
+      coinAddress: item.coinAddress ? normalizeCoinType(String(item.coinAddress)) : null,
       faAddress: item.faAddress ? String(item.faAddress) : null,
     }));
   } catch {
-    tokenCache = [{ symbol: "SUPRA", decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
+    tokenCache = [
+      { symbol: "SUPRA", decimals: 8, coinAddress: COIN, faAddress: SUPRA_META },
+      { symbol: "LUCKY", decimals: 6, coinAddress: "0x4205c82380bff5708cd7c59e0043a45890a457a6cdb60c9191d818958fd7ac26::LUCKY::LUCKY", faAddress: "0x1cc2bc27c5134ffcdd80fddcfaa1b9a05f6c03649c9927429f95fc723174c0ae" },
+      { symbol: "DAWGZ", decimals: 6, coinAddress: "0xb8e94e7204d8eeb565a653d262ae6f7434a3a452e2aaf624810b33dfa3b64d09::DAWGZ::DAWGZ", faAddress: "0x9d998eff3c742a24139590c57d02ff43a4e536a66bb415edabca6979f081bf1" },
+      { symbol: "SPIKE", decimals: 3, coinAddress: "0xfec116479f1fd3cb9732cc768e6061b0e45b178a610b9bc23c2143a6493e794::memecoins::SPIKE", faAddress: "0xf199782bff16646c43de02fe1ca4244def5ea7abe0796a4f45002795e6f6ca35" },
+      { symbol: "SOLID", decimals: 8, coinAddress: null, faAddress: "0xaa925a2232144c11dfe855178e1d252a8d0d4f51f5572fc0ec34efa6333952ae" },
+    ];
   }
   return tokenCache;
 }
 
-async function readCoinStores(owner: string, catalog: TokenMeta[], coins: CoinBalance[]) {
+async function collectCoinStoreTypes(owner: string) {
+  const types = new Set<string>();
   let url = `${RPC}/rpc/v1/accounts/${owner}/resources`;
-  for (let page = 0; page < 8; page += 1) {
+  for (let page = 0; page < 12; page += 1) {
     const res = await fetch(url);
     const json = await res.json();
     const rows = json.Resources?.resource || json.resources || json.result || [];
     for (const row of rows) {
       const type = Array.isArray(row) ? String(row[0] || "") : String(row.type || "");
-      const data = Array.isArray(row) ? row[1] : row.data;
-      const match = type.match(/coin::CoinStore<(.+)>/);
+      if (type.includes("coin::CoinStore<")) types.add(type);
+    }
+    const cursor = json.Resources?.cursor || json.cursor;
+    if (!cursor) break;
+    url = `${RPC}/rpc/v1/accounts/${owner}/resources?start=${encodeURIComponent(cursor)}`;
+  }
+  return [...types];
+}
+
+export async function loadWalletBasics(account: string) {
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
+  const catalog = await tokenCatalog();
+  const coins: CoinBalance[] = [];
+
+  const supra = await coinBalance(owner, COIN);
+  pushHeld(coins, {
+    symbol: "SUPRA",
+    type: COIN,
+    coinType: COIN,
+    fa: SUPRA_META,
+    decimals: 8,
+    amount: formatAmount(supra),
+    raw: supra,
+  });
+
+  try {
+    const storeTypes = await collectCoinStoreTypes(owner);
+    for (const type of storeTypes) {
+      const match = type.match(/CoinStore<(.+)>/);
       if (!match) continue;
-      let coinType = match[1];
-      if (!coinType.startsWith("0x")) coinType = `0x${coinType}`;
-      const raw = BigInt(data?.coin?.value || 0);
-      const known = catalog.find((item) => item.coinAddress === coinType || item.coinAddress === match[1]);
+      const coinType = normalizeCoinType(match[1]);
+      if (coinType === COIN) continue;
+      const raw = await coinBalance(owner, coinType);
+      const known = catalog.find((item) => item.coinAddress === coinType);
       pushHeld(coins, {
         symbol: known?.symbol || coinType.split("::").pop() || "COIN",
         type: coinType,
@@ -236,31 +294,10 @@ async function readCoinStores(owner: string, catalog: TokenMeta[], coins: CoinBa
         raw,
       });
     }
-    const cursor = json.Resources?.cursor || json.cursor;
-    if (!cursor) break;
-    url = `${RPC}/rpc/v1/accounts/${owner}/resources?cursor=${encodeURIComponent(cursor)}`;
-  }
-}
-
-export async function loadWalletBasics(account: string) {
-  const owner = account.startsWith("0x") ? account : `0x${account}`;
-  const catalog = await tokenCatalog();
-  const coins: CoinBalance[] = [];
-  const supraCoin = await coinBalance(owner, COIN);
-  pushHeld(coins, {
-    symbol: "SUPRA",
-    type: COIN,
-    coinType: COIN,
-    fa: SUPRA_META,
-    decimals: 8,
-    amount: formatAmount(supraCoin),
-    raw: supraCoin,
-  });
-  try {
-    await readCoinStores(owner, catalog, coins);
   } catch {
-    // keep SUPRA
+    // SUPRA already loaded
   }
+
   coins.sort((a, b) => Number(b.raw - a.raw));
   return { coins, tokens: [...coins] };
 }
@@ -270,32 +307,38 @@ export async function loadWalletExtras(account: string, already: CoinBalance[]) 
   const catalog = await tokenCatalog();
   const coins = [...already];
   const tokens = [...already];
-  await Promise.all(catalog.map(async (item) => {
-    if (item.coinAddress && item.coinAddress !== COIN) {
-      const raw = await coinBalance(owner, item.coinAddress);
-      pushHeld(coins, {
-        symbol: item.symbol,
-        type: item.coinAddress,
-        coinType: item.coinAddress,
-        fa: item.faAddress || undefined,
-        decimals: item.decimals,
-        amount: formatAmount(raw, item.decimals),
-        raw,
-      });
-    }
-    if (item.faAddress) {
-      const raw = await faBalance(owner, item.faAddress);
-      pushHeld(tokens, {
-        symbol: item.symbol,
-        type: item.faAddress,
-        coinType: item.coinAddress || undefined,
-        fa: item.faAddress,
-        decimals: item.decimals,
-        amount: formatAmount(raw, item.decimals),
-        raw,
-      });
-    }
-  }));
+
+  const work: TokenMeta[] = catalog.filter((item) => item.symbol !== "SUPRA");
+  for (let i = 0; i < work.length; i += 4) {
+    const batch = work.slice(i, i + 4);
+    await Promise.all(batch.map(async (item) => {
+      if (item.coinAddress) {
+        const raw = await coinBalance(owner, item.coinAddress);
+        pushHeld(coins, {
+          symbol: item.symbol,
+          type: item.coinAddress,
+          coinType: item.coinAddress,
+          fa: item.faAddress || undefined,
+          decimals: item.decimals,
+          amount: formatAmount(raw, item.decimals),
+          raw,
+        });
+      }
+      if (item.faAddress) {
+        const raw = await faBalance(owner, item.faAddress);
+        pushHeld(tokens, {
+          symbol: item.symbol,
+          type: item.faAddress,
+          coinType: item.coinAddress || undefined,
+          fa: item.faAddress,
+          decimals: item.decimals,
+          amount: formatAmount(raw, item.decimals),
+          raw,
+        });
+      }
+    }));
+  }
+
   coins.sort((a, b) => Number(b.raw - a.raw));
   tokens.sort((a, b) => Number(b.raw - a.raw));
   return { coins, tokens };
@@ -311,7 +354,7 @@ export async function loadWalletData(account: string) {
 }
 
 function parseCoinType(type: string) {
-  const parts = type.replace(/^0x/, "").split("::");
+  const parts = normalizeCoinType(type).replace(/^0x/, "").split("::");
   return {
     address: (parts[0] || "").padStart(64, "0"),
     module: parts[1] || "",
@@ -359,8 +402,8 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
   return out;
 }
 
-export async function loadShare(account: string, extraCreator = "") {
-  const addrs = Array.from(new Set([account, extraCreator, BUILDER].filter(Boolean)));
+export async function loadShare(account: string, extra = ""): Promise<Share | null> {
+  const addrs = Array.from(new Set([account, extra, BUILDER].filter(Boolean)));
   for (const creator of addrs) {
     for (let id = 0; id < 8; id += 1) {
       for (const who of addrs) {
