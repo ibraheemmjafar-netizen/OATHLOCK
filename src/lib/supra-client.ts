@@ -155,9 +155,18 @@ async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
 }
 
 async function accountResources(address: string) {
-  const res = await fetch(`${RPC}/rpc/v1/accounts/${address}/resources`);
-  const json = await res.json();
-  return json.Resources?.resource || json.resources || json.result || [];
+  const out: unknown[] = [];
+  let url = `${RPC}/rpc/v1/accounts/${address}/resources`;
+  for (let page = 0; page < 8; page += 1) {
+    const res = await fetch(url);
+    const json = await res.json();
+    const rows = json.Resources?.resource || json.resources || json.result || [];
+    out.push(...rows);
+    const cursor = json.Resources?.cursor || json.cursor;
+    if (!cursor) break;
+    url = `${RPC}/rpc/v1/accounts/${address}/resources?cursor=${encodeURIComponent(cursor)}`;
+  }
+  return out;
 }
 
 let tokenCache: TokenMeta[] | null = null;
@@ -186,45 +195,67 @@ async function coinBalance(owner: string, coinType: string) {
   }
 }
 
-function pushUnique(list: CoinBalance[], item: CoinBalance) {
+async function faBalance(owner: string, metadata: string) {
+  try {
+    const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
+    return BigInt(Array.isArray(result) ? result[0] : result || 0);
+  } catch {
+    try {
+      const result = await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [owner, metadata]);
+      return BigInt(Array.isArray(result) ? result[0] : result || 0);
+    } catch {
+      return 0n;
+    }
+  }
+}
+
+function pushHeld(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n) return;
-  const idx = list.findIndex((row) => (row.coinType || row.type) === (item.coinType || item.type) || row.symbol === item.symbol);
-  if (idx >= 0) {
-    if (item.raw > list[idx].raw) list[idx] = { ...list[idx], ...item, raw: item.raw, amount: item.amount };
+  const same = list.findIndex((row) =>
+    (item.coinType && row.coinType === item.coinType) ||
+    (item.fa && row.fa === item.fa) ||
+    row.symbol.toLowerCase() === item.symbol.toLowerCase()
+  );
+  if (same >= 0) {
+    if (item.raw > list[same].raw) list[same] = { ...list[same], ...item };
+    else {
+      list[same].coinType = list[same].coinType || item.coinType;
+      list[same].fa = list[same].fa || item.fa;
+    }
     return;
   }
   list.push(item);
 }
 
 export async function loadWalletData(account: string) {
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
   const catalog = await tokenCatalog();
   const coins: CoinBalance[] = [];
   const tokens: CoinBalance[] = [];
-  const owner = account.startsWith("0x") ? account : `0x${account}`;
 
-  const supraRaw = await coinBalance(owner, COIN);
-  pushUnique(coins, {
+  const supraCoin = await coinBalance(owner, COIN);
+  pushHeld(coins, {
     symbol: "SUPRA",
     type: COIN,
     coinType: COIN,
     fa: SUPRA_META,
     decimals: 8,
-    amount: formatAmount(supraRaw),
-    raw: supraRaw,
+    amount: formatAmount(supraCoin),
+    raw: supraCoin,
   });
 
   try {
     const resources = await accountResources(owner);
     for (const row of resources) {
-      const type = Array.isArray(row) ? String(row[0] || "") : String(row.type || "");
-      const data = Array.isArray(row) ? row[1] : row.data;
-      const coinMatch = type.match(/coin::CoinStore<(.+)>/);
-      if (!coinMatch) continue;
-      let coinType = coinMatch[1];
+      const type = Array.isArray(row) ? String((row as unknown[])[0] || "") : String((row as { type?: string }).type || "");
+      const data = Array.isArray(row) ? (row as unknown[])[1] as { coin?: { value?: string } } : (row as { data?: { coin?: { value?: string } } }).data;
+      const match = type.match(/coin::CoinStore<(.+)>/);
+      if (!match) continue;
+      let coinType = match[1];
       if (!coinType.startsWith("0x")) coinType = `0x${coinType}`;
       const raw = BigInt(data?.coin?.value || 0);
-      const known = catalog.find((item) => item.coinAddress === coinType || item.coinAddress === coinMatch[1]);
-      pushUnique(coins, {
+      const known = catalog.find((item) => item.coinAddress === coinType || item.coinAddress === match[1]);
+      pushHeld(coins, {
         symbol: known?.symbol || coinType.split("::").pop() || "COIN",
         type: coinType,
         coinType,
@@ -235,11 +266,38 @@ export async function loadWalletData(account: string) {
       });
     }
   } catch {
-    // SUPRA probe already ran
+    // keep the SUPRA probe
   }
 
+  await Promise.all(catalog.map(async (item) => {
+    if (item.coinAddress && item.coinAddress !== COIN) {
+      const raw = await coinBalance(owner, item.coinAddress);
+      pushHeld(coins, {
+        symbol: item.symbol,
+        type: item.coinAddress,
+        coinType: item.coinAddress,
+        fa: item.faAddress || undefined,
+        decimals: item.decimals,
+        amount: formatAmount(raw, item.decimals),
+        raw,
+      });
+    }
+    if (item.faAddress) {
+      const raw = await faBalance(owner, item.faAddress);
+      pushHeld(tokens, {
+        symbol: item.symbol,
+        type: item.faAddress,
+        coinType: item.coinAddress || undefined,
+        fa: item.faAddress,
+        decimals: item.decimals,
+        amount: formatAmount(raw, item.decimals),
+        raw,
+      });
+    }
+  }));
+
   coins.sort((a, b) => Number(b.raw - a.raw));
-  tokens.push(...coins);
+  tokens.sort((a, b) => Number(b.raw - a.raw));
   return { coins, tokens };
 }
 
