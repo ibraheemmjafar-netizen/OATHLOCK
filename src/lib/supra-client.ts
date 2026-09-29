@@ -4,7 +4,6 @@ export const RPC = "https://rpc-mainnet.supra.com";
 export const CHAIN = 8;
 export const COIN = "0x1::supra_coin::SupraCoin";
 export const SUPRA_META = "0xa";
-export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000001";
 export const DEXLYN = "0x0dc694898dff98a1b0447e0992d0413e123ea80da1021d464a4fbaf0265870d8";
 export const CURVE = `${DEXLYN}::curves::Uncorrelated`;
 export const TOKEN_LIST = "https://raw.githubusercontent.com/AtmosExchange/supra-token-list/main/token-list.json";
@@ -149,9 +148,7 @@ async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
     });
     const json = await res.json();
     const result = json.result || json.Result || json.response?.result;
-    if (Array.isArray(result) || (result && typeof result === "object" && !json.message)) {
-      return result;
-    }
+    if (Array.isArray(result)) return result;
     last = json.message || json.err || JSON.stringify(json).slice(0, 160);
   }
   throw new Error(last || "View failed");
@@ -189,24 +186,13 @@ async function coinBalance(owner: string, coinType: string) {
   }
 }
 
-async function faBalance(owner: string, metadata: string) {
-  try {
-    const result = await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [owner, metadata]);
-    return BigInt(Array.isArray(result) ? result[0] : result || 0);
-  } catch {
-    try {
-      const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
-      return BigInt(Array.isArray(result) ? result[0] : result || 0);
-    } catch {
-      return 0n;
-    }
-  }
-}
-
 function pushUnique(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n) return;
-  const key = `${item.fa || ""}|${item.coinType || item.type}`;
-  if (list.some((row) => `${row.fa || ""}|${row.coinType || row.type}` === key)) return;
+  const idx = list.findIndex((row) => (row.coinType || row.type) === (item.coinType || item.type) || row.symbol === item.symbol);
+  if (idx >= 0) {
+    if (item.raw > list[idx].raw) list[idx] = { ...list[idx], ...item, raw: item.raw, amount: item.amount };
+    return;
+  }
   list.push(item);
 }
 
@@ -214,67 +200,46 @@ export async function loadWalletData(account: string) {
   const catalog = await tokenCatalog();
   const coins: CoinBalance[] = [];
   const tokens: CoinBalance[] = [];
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
 
-  await Promise.all(catalog.map(async (meta) => {
-    if (meta.coinAddress) {
-      const raw = await coinBalance(account, meta.coinAddress);
-      pushUnique(coins, {
-        symbol: meta.symbol,
-        type: meta.coinAddress,
-        coinType: meta.coinAddress,
-        fa: meta.faAddress || undefined,
-        decimals: meta.decimals,
-        amount: formatAmount(raw, meta.decimals),
-        raw,
-      });
-    }
-    if (meta.faAddress) {
-      const raw = await faBalance(account, meta.faAddress);
-      pushUnique(tokens, {
-        symbol: meta.symbol,
-        type: meta.faAddress,
-        coinType: meta.coinAddress || undefined,
-        fa: meta.faAddress,
-        decimals: meta.decimals,
-        amount: formatAmount(raw, meta.decimals),
-        raw,
-      });
-    }
-  }));
+  const supraRaw = await coinBalance(owner, COIN);
+  pushUnique(coins, {
+    symbol: "SUPRA",
+    type: COIN,
+    coinType: COIN,
+    fa: SUPRA_META,
+    decimals: 8,
+    amount: formatAmount(supraRaw),
+    raw: supraRaw,
+  });
 
   try {
-    const resources = await accountResources(account);
+    const resources = await accountResources(owner);
     for (const row of resources) {
       const type = Array.isArray(row) ? String(row[0] || "") : String(row.type || "");
       const data = Array.isArray(row) ? row[1] : row.data;
-      const coinMatch = type.match(/0x1::coin::CoinStore<(.+)>/);
-      if (coinMatch) {
-        const coinType = coinMatch[1];
-        const raw = BigInt(data?.coin?.value || 0);
-        const known = catalog.find((item) => item.coinAddress === coinType);
-        pushUnique(coins, {
-          symbol: known?.symbol || coinType.split("::").pop() || "COIN",
-          type: coinType,
-          coinType,
-          decimals: known?.decimals || 8,
-          amount: formatAmount(raw, known?.decimals || 8),
-          raw,
-        });
-      }
+      const coinMatch = type.match(/coin::CoinStore<(.+)>/);
+      if (!coinMatch) continue;
+      let coinType = coinMatch[1];
+      if (!coinType.startsWith("0x")) coinType = `0x${coinType}`;
+      const raw = BigInt(data?.coin?.value || 0);
+      const known = catalog.find((item) => item.coinAddress === coinType || item.coinAddress === coinMatch[1]);
+      pushUnique(coins, {
+        symbol: known?.symbol || coinType.split("::").pop() || "COIN",
+        type: coinType,
+        coinType,
+        fa: known?.faAddress || undefined,
+        decimals: known?.decimals || 8,
+        amount: formatAmount(raw, known?.decimals || 8),
+        raw,
+      });
     }
   } catch {
-    // catalog probes still ran
-  }
-
-  if (!coins.length) {
-    coins.push({ symbol: "SUPRA", type: COIN, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: "0", raw: 0n });
-  }
-  if (!tokens.length) {
-    tokens.push({ symbol: "SUPRA", type: SUPRA_META, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: "0", raw: 0n });
+    // SUPRA probe already ran
   }
 
   coins.sort((a, b) => Number(b.raw - a.raw));
-  tokens.sort((a, b) => Number(b.raw - a.raw));
+  tokens.push(...coins);
   return { coins, tokens };
 }
 
@@ -309,16 +274,15 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
     for (let id = 0; id < 12; id += 1) {
       try {
         const preview = await view(`${PKG}::${mod}::preview`, types, [owner, String(id)]);
-        const row = Array.isArray(preview) ? preview : [];
-        const amount = String(row[2] ?? "");
+        const amount = String(preview[2] ?? "");
         if (!amount || amount === "0") continue;
         out.push({
           id: String(id),
           kind,
           module: mod,
           amount: formatAmount(amount),
-          unlock: Number(row[1] ?? 0),
-          ready: row[3] === true || row[3] === "true",
+          unlock: Number(preview[1] ?? 0),
+          ready: preview[3] === true || preview[3] === "true",
         });
       } catch {
         continue;
@@ -328,34 +292,42 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
   return out;
 }
 
-export async function loadShare(account: string) {
-  const owners = Array.from(new Set([account, BUILDER]));
+export async function loadShare(account: string, extraCreator = "") {
+  const owners = Array.from(new Set([extraCreator, account, BUILDER].filter(Boolean)));
   for (const creator of owners) {
-    let count = 4;
-    try {
-      const raw = await view(`${PKG}::vesting::team_vault_count`, [COIN], [creator]);
-      count = Math.max(Number(Array.isArray(raw) ? raw[0] : raw) || 0, 4);
-    } catch {
+    for (const fn of ["team_vault_count", "vault_count"] as const) {
       try {
-        const raw = await view(`${PKG}::vesting::vault_count`, [COIN], [creator]);
-        count = Math.max(Number(Array.isArray(raw) ? raw[0] : raw) || 0, 4);
-      } catch {
-        count = 4;
-      }
-    }
-    for (let id = 0; id < Math.min(count, 12); id += 1) {
-      try {
-        const result = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), account]);
-        const row = Array.isArray(result) ? result : [];
-        if (!row.length) continue;
-        return {
-          id: String(id),
-          creator,
-          total: formatAmount(row[0] || 0),
-          vested: formatAmount(row[1] || 0),
-          claimed: formatAmount(row[2] || 0),
-          entitled: formatAmount(row[3] || 0),
-        };
+        const raw = await view(`${PKG}::vesting::${fn}`, [COIN], [creator]);
+        const count = Math.min(Number(raw?.[0] || 0), 12);
+        for (let id = 0; id < Math.max(count, 4); id += 1) {
+          try {
+            const row = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), account]);
+            if (!row?.length) continue;
+            return {
+              id: String(id),
+              creator,
+              total: formatAmount(row[0] || 0),
+              vested: formatAmount(row[1] || 0),
+              claimed: formatAmount(row[2] || 0),
+              entitled: formatAmount(row[3] || 0),
+            };
+          } catch {
+            try {
+              const row = await view(`${PKG}::vesting::preview`, [COIN], [creator, String(id)]);
+              if (!row?.length) continue;
+              return {
+                id: String(id),
+                creator,
+                total: formatAmount(row[0] || 0),
+                vested: formatAmount(row[2] || 0),
+                claimed: formatAmount(row[1] || 0),
+                entitled: formatAmount(row[2] || 0),
+              };
+            } catch {
+              continue;
+            }
+          }
+        }
       } catch {
         continue;
       }

@@ -1,13 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUpRight, Clock3, ExternalLink, KeyRound, LockKeyhole, Menu, RefreshCw, ShieldCheck, Sparkles, Wallet, X } from 'lucide-react';
-import { ErrorBoundary } from '@/components/error-boundary';
-import mascot from '@/assets/oathlock-mascot.png';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ArrowUpRight,
+  CircleHelp,
+  Clock3,
+  ExternalLink,
+  Github,
+  LockKeyhole,
+  Menu,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Wallet,
+  X,
+} from "lucide-react";
+import { ErrorBoundary } from "@/components/error-boundary";
+import mascot from "@/assets/oathlock-mascot.png";
 import {
   actions,
   BUILDER,
   CHAIN,
-  COIN,
   dateToUnix,
+  formatAmount,
   loadLocks,
   loadShare,
   loadWalletData,
@@ -18,14 +31,16 @@ import {
   type CoinBalance,
   type LockRecord,
   type Provider,
-} from '@/lib/supra-client';
-import { OATH_TOKEN_CONTRACT } from '@/lib/token-config';
+} from "@/lib/supra-client";
 
-type Notice = { tone: 'neutral' | 'success' | 'error'; text: string };
+type Notice = { tone: "neutral" | "success" | "error"; text: string };
 type NameResult = Awaited<ReturnType<typeof lookupName>>;
+type Share = Awaited<ReturnType<typeof loadShare>>;
 
 declare global {
-  interface Window { starkey?: { supra?: Provider }; }
+  interface Window {
+    starkey?: { supra?: Provider };
+  }
 }
 
 const initialUnlock = unixToInput(Math.floor(Date.now() / 1000) + 180);
@@ -34,19 +49,22 @@ const initialEnd = unixToInput(Math.floor(Date.now() / 1000) + 7 * 86400);
 
 function Button({
   children,
-  variant = 'primary',
-  className = '',
+  variant = "primary",
+  className = "",
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "danger";
+}) {
   const variants = {
-    primary: 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_12px_34px_hsl(var(--primary)/.18)] hover:brightness-110',
-    secondary: 'bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] hover:brightness-110',
-    ghost: 'bg-white/5 text-foreground hover:bg-white/10',
-    danger: 'bg-rose-500/20 text-rose-100 hover:bg-rose-500/30',
+    primary:
+      "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_12px_34px_hsl(var(--primary)/.18)] hover:brightness-110",
+    secondary: "bg-cyan-400 text-slate-950 hover:brightness-110",
+    ghost: "bg-white/8 text-white hover:bg-white/12",
+    danger: "bg-rose-500/90 text-white hover:brightness-110",
   };
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${variants[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-45 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
       {...props}
     >
       {children}
@@ -54,12 +72,20 @@ function Button({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block">
-      <span className="mb-1 flex items-center justify-between text-xs uppercase tracking-[0.16em] text-muted-foreground">
+      <span className="mb-1.5 flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/45">
         {label}
-        {hint ? <span className="normal-case tracking-normal">{hint}</span> : null}
+        {hint ? <span className="normal-case tracking-normal text-white/35">{hint}</span> : null}
       </span>
       {children}
     </label>
@@ -67,99 +93,100 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 function inputClass() {
-  return 'w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-[hsl(var(--primary))]';
+  return "w-full rounded-2xl border border-white/10 bg-[#0b0d16] px-3 py-2.5 text-sm text-white outline-none focus:border-violet-400/70";
+}
+
+function isAddr(value: string) {
+  return /^0x[a-fA-F0-9]{16,64}$/.test(value.trim());
 }
 
 function OathlockApp() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<Notice>({ tone: 'neutral', text: 'Connect StarKey on Supra mainnet.' });
   const [provider, setProvider] = useState<Provider | null>(null);
-  const [account, setAccount] = useState('');
+  const [account, setAccount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<Notice>({ tone: "neutral", text: "Connect StarKey on Supra mainnet." });
   const [coins, setCoins] = useState<CoinBalance[]>([]);
   const [tokens, setTokens] = useState<CoinBalance[]>([]);
   const [locks, setLocks] = useState<LockRecord[]>([]);
-  const [share, setShare] = useState<{ id: string; creator: string; total: string; vested: string; claimed: string; entitled: string } | null>(null);
-  const [token, setToken] = useState('0xa');
-  const [amount, setAmount] = useState('0.001');
-  const [unlock, setUnlock] = useState(initialUnlock);
-  const [lpX, setLpX] = useState(COIN);
-  const [lpY, setLpY] = useState(COIN);
-  const [lpAx, setLpAx] = useState('0.01');
-  const [lpAy, setLpAy] = useState('0.01');
-  const [lpUnlock, setLpUnlock] = useState(initialUnlock);
-  const [vaultTo, setVaultTo] = useState('');
-  const [vaultAmount, setVaultAmount] = useState('0.01');
-  const [vaultStart, setVaultStart] = useState(initialStart);
-  const [vaultEnd, setVaultEnd] = useState(initialEnd);
-  const [name, setName] = useState('');
-  const [salePrice, setSalePrice] = useState('0.02');
-  const [transferTo, setTransferTo] = useState('');
+  const [share, setShare] = useState<Share>(null);
   const [nameResult, setNameResult] = useState<NameResult | null>(null);
 
+  const [tokenKey, setTokenKey] = useState("");
+  const [lockAmount, setLockAmount] = useState("0.001");
+  const [lockDate, setLockDate] = useState(initialUnlock);
+  const [lpA, setLpA] = useState("");
+  const [lpB, setLpB] = useState("");
+  const [lpAmtA, setLpAmtA] = useState("0.01");
+  const [lpAmtB, setLpAmtB] = useState("0.01");
+  const [lpDate, setLpDate] = useState(initialUnlock);
+  const [vaultTo, setVaultTo] = useState("");
+  const [vaultAmt, setVaultAmt] = useState("0.01");
+  const [vaultStart, setVaultStart] = useState(initialStart);
+  const [vaultEnd, setVaultEnd] = useState(initialEnd);
+  const [vaultCreator, setVaultCreator] = useState(() => {
+    try {
+      return localStorage.getItem("oathlock.creator") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [name, setName] = useState("");
+  const [listPrice, setListPrice] = useState("0.02");
+  const [nameTo, setNameTo] = useState("");
+
   const heldTokens = useMemo(() => {
-    const rows: CoinBalance[] = [];
     const seen = new Set<string>();
-    for (const item of [...tokens, ...coins]) {
-      const key = (item.fa || item.coinType || item.type || item.symbol).toLowerCase();
+    const out: CoinBalance[] = [];
+    for (const item of [...coins, ...tokens]) {
+      const key = (item.coinType || item.fa || item.type || item.symbol).toLowerCase();
       const alt = item.symbol.toLowerCase();
-      if (seen.has(key) || seen.has(alt)) continue;
+      if (seen.has(key) || seen.has(alt)) {
+        const idx = out.findIndex((row) => row.symbol.toLowerCase() === alt);
+        if (idx >= 0 && item.raw > out[idx].raw) out[idx] = item;
+        continue;
+      }
       seen.add(key);
       seen.add(alt);
-      rows.push(item);
+      out.push(item);
     }
-    return rows;
-  }, [tokens, coins]);
+    return out;
+  }, [coins, tokens]);
 
-  const selectedToken = useMemo(
-    () => heldTokens.find((item) => (item.fa || item.type) === token) || heldTokens[0],
-    [heldTokens, token],
-  );
-  const dexCoins = useMemo(() => coins.filter((item) => item.coinType), [coins]);
+  const selectedToken = heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0];
+  const coinOptions = coins.filter((item) => item.coinType);
+  const firstCoin = coinOptions.find((item) => (item.coinType || item.type) === lpA) || coinOptions[0];
+  const secondCoin = coinOptions.find((item) => (item.coinType || item.type) === lpB) || coinOptions[1] || coinOptions[0];
 
   const refresh = useCallback(async (addr = account) => {
     if (!addr) return;
-    const wallet = await loadWalletData(addr);
-    setCoins(wallet.coins);
-    setTokens(wallet.tokens);
-    const pick = wallet.tokens[0] || wallet.coins[0];
-    if (pick && ![...wallet.tokens, ...wallet.coins].some((item) => (item.fa || item.type) === token)) {
-      setToken(pick.fa || pick.type);
-    }
-    const firstCoin = wallet.coins.find((item) => item.coinType);
-    const secondCoin = wallet.coins.find((item) => item.coinType && item.coinType !== firstCoin?.coinType) || firstCoin;
-    if (firstCoin?.coinType && !wallet.coins.some((item) => item.coinType === lpX)) setLpX(firstCoin.coinType);
-    if (secondCoin?.coinType && !wallet.coins.some((item) => item.coinType === lpY)) setLpY(secondCoin.coinType);
+    const data = await loadWalletData(addr);
+    setCoins(data.coins);
+    setTokens(data.tokens);
+    if (!tokenKey && data.coins[0]) setTokenKey(data.coins[0].coinType || data.coins[0].type);
+    if (!lpA && data.coins[0]) setLpA(data.coins[0].coinType || data.coins[0].type);
+    if (!lpB && (data.coins[1] || data.coins[0])) setLpB((data.coins[1] || data.coins[0]).coinType || (data.coins[1] || data.coins[0]).type);
     setLocks(await loadLocks(addr));
-    setShare(await loadShare(addr));
-  }, [account, token, lpX, lpY]);
+    setShare(await loadShare(addr, vaultCreator));
+  }, [account, tokenKey, lpA, lpB, vaultCreator]);
 
   useEffect(() => {
-    if (account) void refresh(account);
+    if (account) refresh(account).catch((err) => setNotice({ tone: "error", text: String(err.message || err) }));
   }, [account, refresh]);
 
-  function isAddr(value: string) {
-    return /^0x[0-9a-fA-F]{1,64}$/.test(value.trim());
-  }
-
-  async function run(label: string, work: () => Promise<string | void>) {
-    if (!provider || !account) {
-      setNotice({ tone: 'error', text: 'Connect StarKey first.' });
-      return;
-    }
+  async function run(label: string, fn: () => Promise<unknown>) {
     if (busy) {
-      setNotice({ tone: 'error', text: 'StarKey still has an open request. Deny the old cards, then try once.' });
+      setNotice({ tone: "error", text: "Deny leftover StarKey cards first, then try again." });
       return;
     }
     setBusy(true);
-    setNotice({ tone: 'neutral', text: `${label} — approve the latest StarKey card within 10 minutes.` });
+    setNotice({ tone: "neutral", text: `${label}… approve in StarKey.` });
     try {
-      const hash = await work();
-      setNotice({ tone: 'success', text: hash ? `${label} submitted ${shortAddress(String(hash))}. Waiting for the chain…` : `${label} done.` });
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-      await refresh(account);
-    } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      const hash = await fn();
+      setNotice({ tone: "success", text: `${label} submitted ${String(hash || "")}` });
+      setTimeout(() => refresh().catch(() => undefined), 2500);
+    } catch (err) {
+      setNotice({ tone: "error", text: String((err as Error).message || err) });
     } finally {
       setBusy(false);
     }
@@ -168,289 +195,353 @@ function OathlockApp() {
   async function connect() {
     const next = window.starkey?.supra;
     if (!next) {
-      setNotice({ tone: 'error', text: 'Install StarKey, then stay on oathlock.xyz.' });
-      window.open('https://starkey.app/');
+      setNotice({ tone: "error", text: "Install StarKey, then open this site again." });
+      window.open("https://starkey.app/", "_blank");
       return;
     }
     const accounts = await next.connect({ chainId: CHAIN });
-    try { await next.changeNetwork?.({ chainId: String(CHAIN) }); } catch {}
+    try {
+      await next.changeNetwork?.({ chainId: String(CHAIN) });
+    } catch {
+      // already on mainnet
+    }
     setProvider(next);
     setAccount(accounts[0]);
-    setNotice({ tone: 'success', text: `Connected ${shortAddress(accounts[0])} on Supra mainnet.` });
+    setNotice({ tone: "success", text: `Connected ${shortAddress(accounts[0])} on Supra mainnet.` });
   }
 
-  function disconnect() {
-    void provider?.disconnect?.();
+  async function disconnect() {
+    try {
+      await provider?.disconnect?.();
+    } catch {
+      // ignore
+    }
     setProvider(null);
-    setAccount('');
+    setAccount("");
+    setCoins([]);
+    setTokens([]);
     setLocks([]);
     setShare(null);
-    setNotice({ tone: 'neutral', text: 'Disconnected.' });
+    setNotice({ tone: "neutral", text: "Disconnected." });
+  }
+
+  function saveCreator(value: string) {
+    setVaultCreator(value);
+    try {
+      localStorage.setItem("oathlock.creator", value);
+    } catch {
+      // ignore
+    }
   }
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--background))] text-foreground">
-      <header className="sticky top-0 z-20 border-b border-white/5 bg-black/40 backdrop-blur">
+    <div className="min-h-screen bg-[#07080f] text-white">
+      <header className="sticky top-0 z-20 border-b border-white/8 bg-[#07080f]/90 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2 font-semibold tracking-[0.18em]">
-            <LockKeyhole className="h-5 w-5 text-[hsl(var(--primary))]" /> OATHLOCK
-          </div>
-          <nav className="hidden items-center gap-6 text-sm text-muted-foreground md:flex">
+          <a href="#lock" className="flex items-center gap-2 font-semibold tracking-[0.18em]">
+            <LockKeyhole className="h-4 w-4 text-violet-300" />
+            OATHLOCK
+          </a>
+          <nav className="hidden items-center gap-6 text-sm text-white/70 md:flex">
             <a href="#lock">Lock</a>
-            <a href="#vest">Vesting</a>
+            <a href="#vesting">Vesting</a>
             <a href="#names">Names</a>
-            <a href={OATH_TOKEN_CONTRACT || '#'} target="_blank" rel="noreferrer">OATH token</a>
             <a href="https://t.me" target="_blank" rel="noreferrer">Telegram</a>
           </nav>
           <div className="flex items-center gap-2">
             {account ? (
-              <Button variant="secondary" onClick={disconnect}>{shortAddress(account)} <X className="h-3 w-3" /></Button>
+              <Button variant="secondary" onClick={disconnect}>
+                {shortAddress(account)} <X className="h-3.5 w-3.5" />
+              </Button>
             ) : (
-              <Button onClick={connect}><Wallet className="h-4 w-4" /> Connect</Button>
+              <Button onClick={connect}>
+                <Wallet className="h-4 w-4" /> Connect
+              </Button>
             )}
-            <button className="md:hidden" onClick={() => setMenuOpen((v) => !v)}><Menu className="h-5 w-5" /></button>
+            <button className="md:hidden" onClick={() => setMenuOpen((v) => !v)}>
+              <Menu className="h-5 w-5" />
+            </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl space-y-8 px-4 py-10">
-        <section className="grid items-center gap-8 lg:grid-cols-[1.2fr_.8fr]">
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        <section className="mb-8 grid items-center gap-6 md:grid-cols-[1.2fr_.8fr]">
           <div>
-            <p className="text-sm uppercase tracking-[0.24em] text-muted-foreground">Keep your word.</p>
-            <h1 className="mt-2 text-5xl font-semibold leading-none md:text-7xl">On-chain.</h1>
-            <p className="mt-4 max-w-xl text-muted-foreground">
-              Oathlock is the friend who holds you to it. Lock tokens, secure Dexlyn LP, ship team vesting, and put a name on your wallet — without a developer console in sight.
+            <h1 className="text-3xl font-semibold leading-tight md:text-5xl">
+              Lock tokens, vest a team, and put a name on your wallet.
+            </h1>
+            <p className="mt-3 max-w-xl text-white/60">
+              No console. Connect StarKey, pick what this wallet holds, and keep the promise on-chain.
             </p>
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button onClick={() => document.getElementById('lock')?.scrollIntoView({ behavior: 'smooth' })}>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Button onClick={() => document.getElementById("lock")?.scrollIntoView({ behavior: "smooth" })}>
                 Create a lock <ArrowUpRight className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" onClick={() => document.getElementById('lock')?.scrollIntoView({ behavior: 'smooth' })}>
-                How it works <ArrowDown className="h-4 w-4" />
+              <Button variant="ghost" onClick={() => document.getElementById("names")?.scrollIntoView({ behavior: "smooth" })}>
+                How it works
               </Button>
             </div>
           </div>
-          <div className="relative mx-auto">
-            <img src={mascot} alt="" className="h-64 w-64 object-contain mix-blend-screen md:h-80 md:w-80" />
-          </div>
+          <img src={mascot} alt="Oathlock" className="mx-auto max-h-56 mix-blend-screen" />
         </section>
 
-        <div className={`rounded-2xl border px-4 py-3 text-sm ${notice.tone === 'error' ? 'border-rose-500/30 text-rose-200' : notice.tone === 'success' ? 'border-emerald-500/30 text-emerald-200' : 'border-white/10 text-muted-foreground'}`}>
+        <div className={`mb-6 rounded-2xl border px-4 py-3 text-sm ${
+          notice.tone === "success" ? "border-emerald-400/30 text-emerald-300" :
+          notice.tone === "error" ? "border-rose-400/30 text-rose-300" :
+          "border-white/10 text-white/70"
+        }`}>
           {notice.text}
         </div>
 
         <section id="lock" className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
-            <div className="mb-4 flex items-center justify-between">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="mb-4 flex items-start justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Token lock</h2>
-                <p className="text-sm text-muted-foreground">Tokens this wallet actually holds.</p>
+                <p className="text-sm text-white/50">Tokens this wallet actually holds.</p>
               </div>
-              <LockKeyhole className="h-5 w-5 text-[hsl(var(--primary))]" />
+              <LockKeyhole className="h-4 w-4 text-violet-300" />
             </div>
-            <div className="grid gap-4">
-              <Field label="Token" hint="Wallet holdings">
-                <select className={inputClass()} value={selectedToken?.fa || selectedToken?.type || token} onChange={(e) => setToken(e.target.value)}>
-                  {(heldTokens.length ? heldTokens : [{ symbol: 'SUPRA', type: '0xa', fa: '0xa', amount: '0', decimals: 8, raw: 0n }]).map((item) => (
-                    <option key={`${item.symbol}-${item.fa || item.type}`} value={item.fa || item.type}>{item.symbol} · {item.amount}</option>
-                  ))}
-                </select>
+            <Field label="Token" hint="Wallet holdings">
+              <select className={inputClass()} value={selectedToken ? (selectedToken.coinType || selectedToken.fa || selectedToken.type) : ""} onChange={(e) => setTokenKey(e.target.value)}>
+                {heldTokens.length ? heldTokens.map((item) => (
+                  <option key={item.coinType || item.fa || item.type} value={item.coinType || item.fa || item.type}>
+                    {item.symbol} · {item.amount}
+                  </option>
+                )) : <option value="">Connect to load tokens</option>}
+              </select>
+            </Field>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Amount" hint={selectedToken?.symbol || "SUPRA"}>
+                <input className={inputClass()} value={lockAmount} onChange={(e) => setLockAmount(e.target.value)} />
               </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Amount" hint={selectedToken?.symbol}>
-                  <input className={inputClass()} value={amount} onChange={(e) => setAmount(e.target.value)} />
-                </Field>
-                <Field label="Unlock date">
-                  <input className={inputClass()} type="datetime-local" value={unlock} onChange={(e) => setUnlock(e.target.value)} />
-                </Field>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="ghost" onClick={() => setUnlock(unixToInput(Math.floor(Date.now() / 1000) + 180))}>
-                  <Clock3 className="h-4 w-4" /> 3 minute test lock
-                </Button>
-                <Button variant="secondary" disabled={busy} onClick={() => run('Prepare SUPRA', () => actions.migrate(provider!, account))}>Prepare SUPRA</Button>
-                <Button disabled={busy || !selectedToken} onClick={() => run('Lock token', () => actions.lockToken(provider!, account, selectedToken!, toAmount(amount, selectedToken!.decimals), dateToUnix(unlock)))}>
-                  Lock {selectedToken?.symbol || 'token'} <ArrowUpRight className="h-4 w-4" />
-                </Button>
-              </div>
+              <Field label="Unlock date">
+                <input className={inputClass()} type="datetime-local" value={lockDate} onChange={(e) => setLockDate(e.target.value)} />
+              </Field>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button variant="ghost" onClick={() => setLockDate(unixToInput(Math.floor(Date.now() / 1000) + 180))}>
+                <Clock3 className="h-4 w-4" /> 3 minute test lock
+              </Button>
+              <Button variant="secondary" disabled={!account || busy} onClick={() => run("Prepare store", () => actions.migrate(provider!, account))}>
+                Prepare store
+              </Button>
+              <Button disabled={!account || !selectedToken || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), dateToUnix(lockDate)))}>
+                Lock {selectedToken?.symbol || "token"} <ArrowUpRight className="h-4 w-4" />
+              </Button>
             </div>
           </div>
 
-          <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Your locks</h2>
-                <p className="text-sm text-muted-foreground">{locks.length} still holding.</p>
+                <p className="text-sm text-white/50">{locks.length} still holding.</p>
               </div>
-              <button onClick={() => refresh()}><RefreshCw className="h-4 w-4" /></button>
+              <button onClick={() => refresh()} className="rounded-full p-2 hover:bg-white/8">
+                <RefreshCw className="h-4 w-4" />
+              </button>
             </div>
             <div className="space-y-3">
-              {locks.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/10 p-8 text-sm text-muted-foreground">No open locks on this wallet.</div>
-              ) : locks.map((lock) => (
-                <div key={`${lock.kind}-${lock.id}`} className="rounded-2xl border border-white/10 p-4">
-                  <p className="text-sm font-medium">{lock.kind} #{lock.id}</p>
-                  <p className="text-sm text-muted-foreground">{lock.amount} · unlocks {new Date(lock.unlock * 1000).toLocaleString()}</p>
-                  <p className={lock.ready ? 'text-emerald-300' : 'text-amber-200'}>{lock.ready ? 'Ready to claim' : 'Still locked'}</p>
-                  {lock.ready && (
-                    <Button className="mt-3" disabled={busy} onClick={() => run('Claim lock', () => actions.claimLock(provider!, account, lock.module, lock.id))}>Claim</Button>
-                  )}
+              {locks.length ? locks.map((lock) => (
+                <div key={`${lock.module}-${lock.id}`} className="rounded-2xl border border-white/10 p-4">
+                  <div className="flex items-center justify-between">
+                    <b>{lock.kind} #{lock.id}</b>
+                    <span className={lock.ready ? "text-emerald-300" : "text-white/50"}>{lock.ready ? "Ready" : "Locked"}</span>
+                  </div>
+                  <p className="mt-1 text-sm text-white/70">{lock.amount} · unlock {new Date(lock.unlock * 1000).toLocaleString()}</p>
+                  <Button className="mt-3" disabled={!lock.ready || busy} onClick={() => run("Claim lock", () => actions.claimLock(provider!, account, lock.module, lock.id))}>
+                    Claim
+                  </Button>
                 </div>
-              ))}
+              )) : (
+                <div className="rounded-2xl border border-dashed border-white/15 px-4 py-10 text-center text-white/40">
+                  No open locks on this wallet.
+                </div>
+              )}
             </div>
           </div>
         </section>
 
-        <section className="rounded-[28px] border border-white/10 bg-white/5 p-5">
-          <div className="mb-4 flex items-center justify-between">
+        <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Dexlyn LP lock</h2>
-              <p className="text-sm text-muted-foreground">Pick two different coins. Dexlyn has no on-chain preview yet, so LP locks will not appear in the list until we add that view.</p>
+              <p className="text-sm text-white/50">Pick two different coins. Dexlyn has no on-chain preview yet, so LP locks will not appear in the list until that view exists.</p>
             </div>
-            <Button variant="ghost" onClick={() => {
-              if (dexCoins[0]) setLpAx((Number(dexCoins[0].amount) * 0.01).toFixed(6));
-              if (dexCoins[1] || dexCoins[0]) setLpAy((Number((dexCoins[1] || dexCoins[0]).amount) * 0.01).toFixed(6));
+            <Button variant="ghost" disabled={!firstCoin || !secondCoin} onClick={() => {
+              if (!firstCoin || !secondCoin) return;
+              setLpAmtA((Number(firstCoin.amount) * 0.01).toFixed(Math.min(firstCoin.decimals, 6)));
+              setLpAmtB((Number(secondCoin.amount) * 0.01).toFixed(Math.min(secondCoin.decimals, 6)));
             }}>
               <Sparkles className="h-4 w-4" /> Use 1% of each
             </Button>
           </div>
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-2">
             <Field label="First coin">
-              <select className={inputClass()} value={lpX} onChange={(e) => setLpX(e.target.value)}>
-                {dexCoins.map((item) => <option key={item.coinType} value={item.coinType}>{item.symbol} · {item.amount}</option>)}
+              <select className={inputClass()} value={firstCoin?.coinType || ""} onChange={(e) => setLpA(e.target.value)}>
+                {coinOptions.map((item) => <option key={item.coinType} value={item.coinType}>{item.symbol} · {item.amount}</option>)}
               </select>
             </Field>
             <Field label="Amount">
-              <input className={inputClass()} value={lpAx} onChange={(e) => setLpAx(e.target.value)} />
+              <input className={inputClass()} value={lpAmtA} onChange={(e) => setLpAmtA(e.target.value)} />
             </Field>
             <Field label="Second coin">
-              <select className={inputClass()} value={lpY} onChange={(e) => setLpY(e.target.value)}>
-                {dexCoins.map((item) => <option key={`y-${item.coinType}`} value={item.coinType}>{item.symbol} · {item.amount}</option>)}
+              <select className={inputClass()} value={secondCoin?.coinType || ""} onChange={(e) => setLpB(e.target.value)}>
+                {coinOptions.map((item) => <option key={`b-${item.coinType}`} value={item.coinType}>{item.symbol} · {item.amount}</option>)}
               </select>
             </Field>
             <Field label="Amount">
-              <input className={inputClass()} value={lpAy} onChange={(e) => setLpAy(e.target.value)} />
+              <input className={inputClass()} value={lpAmtB} onChange={(e) => setLpAmtB(e.target.value)} />
             </Field>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
             <Field label="Unlock date">
-              <input className={inputClass()} type="datetime-local" value={lpUnlock} onChange={(e) => setLpUnlock(e.target.value)} />
+              <input className={inputClass()} type="datetime-local" value={lpDate} onChange={(e) => setLpDate(e.target.value)} />
             </Field>
-            <div className="flex items-end">
-              <Button disabled={busy || lpX === lpY} onClick={() => {
-                const xTok = dexCoins.find((item) => item.coinType === lpX);
-                const yTok = dexCoins.find((item) => item.coinType === lpY);
-                return run('Add LP and lock', () => actions.lockLp(
-                  provider!,
-                  account,
-                  lpX,
-                  lpY,
-                  toAmount(lpAx, xTok?.decimals || 8),
-                  toAmount(lpAy, yTok?.decimals || 8),
-                  dateToUnix(lpUnlock),
-                ));
-              }}>
-                Add LP and lock <ArrowUpRight className="h-4 w-4" />
-              </Button>
-            </div>
+            <Button disabled={!account || !firstCoin || !secondCoin || busy} onClick={() => {
+              if (!firstCoin?.coinType || !secondCoin?.coinType || firstCoin.coinType === secondCoin.coinType) {
+                setNotice({ tone: "error", text: "Pick two different coins." });
+                return;
+              }
+              run("Dexlyn LP lock", () => actions.lockLp(
+                provider!,
+                account,
+                firstCoin.coinType!,
+                secondCoin.coinType!,
+                toAmount(lpAmtA, firstCoin.decimals),
+                toAmount(lpAmtB, secondCoin.decimals),
+                dateToUnix(lpDate),
+              ));
+            }}>
+              Add LP and lock <ArrowUpRight className="h-4 w-4" />
+            </Button>
           </div>
         </section>
 
-        <section id="vest" className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
+        <section id="vesting" className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Create a team vault</h2>
-            <p className="mb-4 text-sm text-muted-foreground">SUPRA vesting, on-chain schedule. Who gets it must be a 0x wallet.</p>
-            <div className="grid gap-4">
-              <Field label="Who gets it" hint="Wallet address">
-                <input className={inputClass()} value={vaultTo} placeholder="Paste recipient wallet" onChange={(e) => setVaultTo(e.target.value)} />
+            <p className="mb-4 text-sm text-white/50">SUPRA vesting, on-chain schedule. Who gets it must be a 0x wallet, not a name.</p>
+            <Field label="Who gets it" hint="Wallet address">
+              <input className={inputClass()} value={vaultTo} placeholder="0x…" onChange={(e) => setVaultTo(e.target.value.trim())} />
+            </Field>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Amount">
+                <input className={inputClass()} value={vaultAmt} onChange={(e) => setVaultAmt(e.target.value)} />
               </Field>
-              <Field label="Amount" hint="SUPRA">
-                <input className={inputClass()} value={vaultAmount} onChange={(e) => setVaultAmount(e.target.value)} />
+              <Field label="Start">
+                <input className={inputClass()} type="datetime-local" value={vaultStart} onChange={(e) => setVaultStart(e.target.value)} />
               </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Starts">
-                  <input className={inputClass()} type="datetime-local" value={vaultStart} onChange={(e) => setVaultStart(e.target.value)} />
-                </Field>
-                <Field label="Fully unlocked">
-                  <input className={inputClass()} type="datetime-local" value={vaultEnd} onChange={(e) => setVaultEnd(e.target.value)} />
-                </Field>
-              </div>
-              <Button disabled={busy} onClick={() => {
-                if (!isAddr(vaultTo || account)) {
-                  setNotice({ tone: 'error', text: 'Who gets it must be a 0x wallet, not a name like ibraheem.supra.' });
-                  return;
-                }
-                return run('Create vault', () => actions.createVault(provider!, account, vaultTo || account, toAmount(vaultAmount), dateToUnix(vaultStart), dateToUnix(vaultEnd)));
-              }}>
-                Create vault <ShieldCheck className="h-4 w-4" />
-              </Button>
+              <Field label="End">
+                <input className={inputClass()} type="datetime-local" value={vaultEnd} onChange={(e) => setVaultEnd(e.target.value)} />
+              </Field>
             </div>
+            <Button className="mt-4" disabled={!account || busy} onClick={() => {
+              if (!isAddr(vaultTo)) {
+                setNotice({ tone: "error", text: "Who gets it must be a 0x wallet address." });
+                return;
+              }
+              saveCreator(account);
+              run("Create vault", () => actions.createVault(provider!, account, vaultTo, toAmount(vaultAmt), dateToUnix(vaultStart), dateToUnix(vaultEnd)));
+            }}>
+              Create vault
+            </Button>
           </div>
 
-          <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
+            <p className="mb-4 text-sm text-white/50">
+              The vault lives on the creator wallet. Connect the recipient, paste the creator 0x, then find the share.
+            </p>
+            <Field label="Vault created by" hint="Creator 0x">
+              <input
+                className={inputClass()}
+                value={vaultCreator}
+                placeholder="Paste the wallet that created the vault"
+                onChange={(e) => saveCreator(e.target.value.trim())}
+              />
+            </Field>
+            <Button variant="ghost" className="mt-3" onClick={() => refresh()}>Find my share</Button>
             {share ? (
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-2xl bg-black/20 p-4">Vault #{share.id}<br /><strong>{shortAddress(share.creator)}</strong></div>
-                <div className="rounded-2xl bg-black/20 p-4">Total<br /><strong>{share.total}</strong></div>
-                <div className="rounded-2xl bg-black/20 p-4">Vested<br /><strong>{share.vested}</strong></div>
-                <div className="rounded-2xl bg-black/20 p-4">Yours now<br /><strong>{share.entitled}</strong></div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Vault</b>#{share.id}</div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Creator</b>{shortAddress(share.creator)}</div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Total</b>{share.total}</div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Vested</b>{share.vested}</div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Claimed</b>{share.claimed}</div>
+                <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">You can take</b>{share.entitled}</div>
               </div>
-            ) : <p className="mt-4 text-sm text-muted-foreground">This wallet has no share on an Oathlock vault yet. Create the vault from the builder wallet, then connect the recipient wallet.</p>}
-            <Button className="mt-4" disabled={busy || !share} onClick={() => run('Claim share', () => actions.claimShare(provider!, account, share!.creator || BUILDER, share!.id || '0'))}>Claim vested share</Button>
+            ) : (
+              <p className="mt-4 text-sm text-white/45">No share found for this wallet yet.</p>
+            )}
+            <Button className="mt-4" disabled={!account || !share || busy} onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}>
+              Claim vested SUPRA
+            </Button>
           </div>
         </section>
 
-        <section id="names" className="rounded-[28px] border border-white/10 bg-white/5 p-5">
-          <h2 className="text-xl font-semibold">On-chain names</h2>
-          <p className="mb-4 text-sm text-muted-foreground">Look up a name, buy it, list it, or send it. Nothing is prefilled. A name is a handle, not a deposit address.</p>
-          <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
+        <section id="names" className="mt-4 rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <h2 className="text-xl font-semibold">Names</h2>
+            <CircleHelp className="h-4 w-4 text-white/40" />
+          </div>
+          <p className="mb-4 max-w-3xl text-sm text-white/55">
+            A name is a public handle stored on Oathlock, like a username. It is not a payment address yet.
+            People cannot send SUPRA to <b>oathlock.supra</b>. They look the name up here, see the owner 0x, then send to that wallet.
+            You can list it, buy a listed name, or transfer the name to another 0x.
+          </p>
+          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
             <Field label="Name">
-              <input className={inputClass()} value={name} placeholder="yourname" onChange={(e) => setName(e.target.value)} />
+              <input className={inputClass()} value={name} placeholder="oathlock" onChange={(e) => setName(e.target.value.toLowerCase())} />
             </Field>
-            <div className="flex items-end">
-              <Button onClick={async () => {
-                try {
-                  setNameResult(await lookupName(name));
-                } catch (error) {
-                  setNotice({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
-                }
-              }}>Look up</Button>
-            </div>
+            <Button variant="ghost" className="self-end" onClick={async () => {
+              try {
+                setNameResult(await lookupName(name));
+              } catch (err) {
+                setNotice({ tone: "error", text: String((err as Error).message || err) });
+              }
+            }}>
+              Look up
+            </Button>
           </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <Field label="Sale price">
-              <input className={inputClass()} value={salePrice} onChange={(e) => setSalePrice(e.target.value)} />
-            </Field>
-            <Field label="Send to">
-              <input className={inputClass()} value={transferTo} placeholder="Recipient wallet" onChange={(e) => setTransferTo(e.target.value)} />
-            </Field>
-          </div>
+          {nameResult ? (
+            <p className="mt-3 text-sm text-white/70">
+              {nameResult.available
+                ? `${nameResult.name} is free.`
+                : `${nameResult.name} is owned by ${shortAddress(nameResult.owner || "")}${nameResult.listed ? ` and listed for ${nameResult.price} SUPRA` : ""}.`}
+            </p>
+          ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button disabled={busy} onClick={() => run('Register name', () => actions.registerName(provider!, account, name.trim().toLowerCase()))}>Register</Button>
-            <Button variant="secondary" disabled={busy} onClick={() => run('Put on sale', () => actions.listName(provider!, account, name.trim().toLowerCase(), toAmount(salePrice)))}>Put on sale</Button>
-            <Button variant="secondary" disabled={busy} onClick={() => run('Buy name', () => actions.buyName(provider!, account, name.trim().toLowerCase()))}>Buy</Button>
-            <Button variant="ghost" disabled={busy} onClick={() => run('Delist name', () => actions.delistName(provider!, account, name.trim().toLowerCase()))}>Delist</Button>
-            <Button variant="ghost" disabled={busy} onClick={() => run('Send name', () => actions.transferName(provider!, account, name.trim().toLowerCase(), transferTo))}>Send</Button>
+            <Button disabled={!account || busy} onClick={() => run("Register", () => actions.registerName(provider!, account, name.trim().toLowerCase()))}>Register</Button>
+            <Button variant="ghost" disabled={!account || busy} onClick={() => run("List", () => actions.listName(provider!, account, name.trim().toLowerCase(), toAmount(listPrice)))}>Put on sale</Button>
+            <Button variant="ghost" disabled={!account || busy} onClick={() => run("Buy", () => actions.buyName(provider!, account, name.trim().toLowerCase()))}>Buy</Button>
+            <Button variant="ghost" disabled={!account || busy} onClick={() => run("Delist", () => actions.delistName(provider!, account, name.trim().toLowerCase()))}>Delist</Button>
           </div>
-          {nameResult && (
-            <div className="mt-4 rounded-2xl bg-black/20 p-4 text-sm">
-              <p><KeyRound className="mr-2 inline h-4 w-4" />{nameResult.name} {nameResult.available ? 'is free' : `owned by ${shortAddress(nameResult.owner || '')}`}</p>
-              {nameResult.listed && <p>Listed at {nameResult.price} SUPRA</p>}
-              {!nameResult.available && (
-                <div className="mt-3 space-y-2 text-muted-foreground">
-                  <p className="text-foreground">How to use {nameResult.name}</p>
-                  <p>This is an on-chain handle owned by a wallet. People can look it up here to see who owns it and whether it is for sale.</p>
-                  <p>It is not a bank account. You cannot send SUPRA to <span className="text-foreground">{nameResult.name}.supra</span> yet. Payments still go to the 0x wallet that owns the name.</p>
-                  <p>Use it as your public tag, list it if you want to sell, or send the name to another 0x address. Keep the 0x address for actual transfers.</p>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <Field label="Sale price">
+              <input className={inputClass()} value={listPrice} onChange={(e) => setListPrice(e.target.value)} />
+            </Field>
+            <Field label="Send name to">
+              <input className={inputClass()} value={nameTo} placeholder="0x…" onChange={(e) => setNameTo(e.target.value.trim())} />
+            </Field>
+          </div>
+          <Button className="mt-3" disabled={!account || busy} onClick={() => {
+            if (!isAddr(nameTo)) {
+              setNotice({ tone: "error", text: "Send-to must be a 0x wallet." });
+              return;
+            }
+            run("Transfer name", () => actions.transferName(provider!, account, name.trim().toLowerCase(), nameTo));
+          }}>
+            Transfer name
+          </Button>
         </section>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 pb-10 text-sm text-muted-foreground">
-          <span>Oathlock on Supra mainnet</span>
-          <a className="inline-flex items-center gap-1" href="https://suprascan.io" target="_blank" rel="noreferrer">
-            Explorer <ExternalLink className="h-3 w-3" />
+        <footer className="mt-10 flex flex-wrap items-center justify-between gap-3 pb-10 text-sm text-white/40">
+          <span>Builder {shortAddress(BUILDER)}</span>
+          <a className="inline-flex items-center gap-1" href="https://github.com" target="_blank" rel="noreferrer">
+            <Github className="h-4 w-4" /> Source <ExternalLink className="h-3 w-3" />
           </a>
         </footer>
       </main>
