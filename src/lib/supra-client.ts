@@ -1,19 +1,19 @@
-export const PKG = '0x8bf4f925f0a654d7b6715cfb7d3d7e5c3cb6e8907c1a134d80aabc45db64f5fb';
+export const PKG = "0x8bf4f925f0a654d7b6715cfb7d3d7e5c3cb6e8907c1a134d80aabc45db64f5fb";
 export const BUILDER = PKG;
-export const RPC = 'https://rpc-mainnet.supra.com';
+export const RPC = "https://rpc-mainnet.supra.com";
 export const CHAIN = 8;
-export const COIN = '0x1::supra_coin::SupraCoin';
-export const SUPRA_META = '0xa';
-export const FRAMEWORK = '0000000000000000000000000000000000000000000000000000000000000001';
-export const DEXLYN = '0x0dc694898dff98a1b0447e0992d0413e123ea80da1021d464a4fbaf0265870d8';
+export const COIN = "0x1::supra_coin::SupraCoin";
+export const SUPRA_META = "0xa";
+export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000001";
+export const DEXLYN = "0x0dc694898dff98a1b0447e0992d0413e123ea80da1021d464a4fbaf0265870d8";
 export const CURVE = `${DEXLYN}::curves::Uncorrelated`;
-export const TOKEN_LIST = 'https://raw.githubusercontent.com/AtmosExchange/supra-token-list/main/token-list.json';
+export const TOKEN_LIST = "https://raw.githubusercontent.com/AtmosExchange/supra-token-list/main/token-list.json";
 
 export type Provider = {
   connect: (opts: { chainId: number }) => Promise<string[]>;
   changeNetwork?: (opts: { chainId: string }) => Promise<unknown>;
   createRawTransactionData: (args: unknown[]) => Promise<unknown>;
-  sendTransaction: (opts: { data: unknown; from: string }) => Promise<string>;
+  sendTransaction: (opts: { data: unknown; from: string; to?: string; value?: string; chainId?: string }) => Promise<string>;
   disconnect?: () => Promise<unknown>;
 };
 
@@ -30,6 +30,7 @@ export type CoinBalance = {
 export type LockRecord = {
   id: string;
   kind: string;
+  module: string;
   amount: string;
   unlock: number;
   ready: boolean;
@@ -51,8 +52,8 @@ type TokenMeta = {
   faAddress: string | null;
 };
 
-export function shortAddress(value = '') {
-  const clean = value.replace(/^0x/, '');
+export function shortAddress(value = "") {
+  const clean = value.replace(/^0x/, "");
   return `0x${clean.slice(0, 4)}…${clean.slice(-4)}`;
 }
 
@@ -60,14 +61,14 @@ export function formatAmount(raw: string | number | bigint, decimals = 8) {
   const value = BigInt(raw || 0);
   const base = 10n ** BigInt(decimals);
   const whole = value / base;
-  const frac = (value % base).toString().padStart(decimals, '0').replace(/0+$/, '').slice(0, 6);
+  const frac = (value % base).toString().padStart(decimals, "0").replace(/0+$/, "").slice(0, 6);
   return frac ? `${whole}.${frac}` : whole.toString();
 }
 
 export function toAmount(input: string, decimals = 8) {
-  const [whole = '0', frac = ''] = String(input || '0').replace(/,/g, '').split('.');
-  const padded = (frac + '0'.repeat(decimals)).slice(0, decimals);
-  return (BigInt(whole || '0') * 10n ** BigInt(decimals) + BigInt(padded || '0')).toString();
+  const [whole = "0", frac = ""] = String(input || "0").replace(/,/g, "").split(".");
+  const padded = (frac + "0".repeat(decimals)).slice(0, decimals);
+  return (BigInt(whole || "0") * 10n ** BigInt(decimals) + BigInt(padded || "0")).toString();
 }
 
 export function dateToUnix(value: string) {
@@ -77,12 +78,12 @@ export function dateToUnix(value: string) {
 
 export function unixToInput(unix: number) {
   const date = new Date(unix * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
+  const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function padHex(value: string) {
-  return value.replace(/^0x/, '').padStart(64, '0');
+  return value.replace(/^0x/, "").padStart(64, "0");
 }
 
 function concatBytes(parts: Uint8Array[]) {
@@ -139,18 +140,21 @@ export function bcsU64Vec(values: Array<string | number | bigint>) {
 
 async function view(fn: string, typeArgs: string[] = [], args: unknown[] = []) {
   const body = { function: fn, type_arguments: typeArgs, arguments: args };
-  for (const path of ['/rpc/v3/view', '/rpc/v2/view', '/rpc/v1/view']) {
+  let last = "";
+  for (const path of ["/rpc/v3/view", "/rpc/v2/view", "/rpc/v1/view"]) {
     const res = await fetch(RPC + path, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     const json = await res.json();
-    if (res.ok && !json.message && !json.err) {
-      return json.result || json.response?.result || json;
+    const result = json.result || json.Result || json.response?.result;
+    if (Array.isArray(result) || (result && typeof result === "object" && !json.message)) {
+      return result;
     }
+    last = json.message || json.err || JSON.stringify(json).slice(0, 160);
   }
-  throw new Error('View failed');
+  throw new Error(last || "View failed");
 }
 
 async function accountResources(address: string) {
@@ -165,20 +169,20 @@ async function tokenCatalog() {
   try {
     const list = await fetch(TOKEN_LIST).then((r) => r.json());
     tokenCache = (list as Array<Record<string, unknown>>).map((item) => ({
-      symbol: String(item.officialSymbol || item.symbol || 'TOKEN'),
+      symbol: String(item.officialSymbol || item.symbol || "TOKEN"),
       decimals: Number(item.decimals || 8),
       coinAddress: item.coinAddress ? String(item.coinAddress) : null,
       faAddress: item.faAddress ? String(item.faAddress) : null,
     }));
   } catch {
-    tokenCache = [{ symbol: 'SUPRA', decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
+    tokenCache = [{ symbol: "SUPRA", decimals: 8, coinAddress: COIN, faAddress: SUPRA_META }];
   }
   return tokenCache;
 }
 
 async function coinBalance(owner: string, coinType: string) {
   try {
-    const result = await view('0x1::coin::balance', [coinType], [owner]);
+    const result = await view("0x1::coin::balance", [coinType], [owner]);
     return BigInt(Array.isArray(result) ? result[0] : result || 0);
   } catch {
     return 0n;
@@ -187,11 +191,11 @@ async function coinBalance(owner: string, coinType: string) {
 
 async function faBalance(owner: string, metadata: string) {
   try {
-    const result = await view('0x1::primary_fungible_store::balance', ['0x1::fungible_asset::Metadata'], [owner, metadata]);
+    const result = await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [owner, metadata]);
     return BigInt(Array.isArray(result) ? result[0] : result || 0);
   } catch {
     try {
-      const result = await view('0x1::primary_fungible_store::balance', [], [owner, metadata]);
+      const result = await view("0x1::primary_fungible_store::balance", [], [owner, metadata]);
       return BigInt(Array.isArray(result) ? result[0] : result || 0);
     } catch {
       return 0n;
@@ -201,8 +205,8 @@ async function faBalance(owner: string, metadata: string) {
 
 function pushUnique(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n) return;
-  const key = `${item.fa || ''}|${item.coinType || item.type}`;
-  if (list.some((row) => `${row.fa || ''}|${row.coinType || row.type}` === key)) return;
+  const key = `${item.fa || ""}|${item.coinType || item.type}`;
+  if (list.some((row) => `${row.fa || ""}|${row.coinType || row.type}` === key)) return;
   list.push(item);
 }
 
@@ -241,7 +245,7 @@ export async function loadWalletData(account: string) {
   try {
     const resources = await accountResources(account);
     for (const row of resources) {
-      const type = Array.isArray(row) ? String(row[0] || '') : String(row.type || '');
+      const type = Array.isArray(row) ? String(row[0] || "") : String(row.type || "");
       const data = Array.isArray(row) ? row[1] : row.data;
       const coinMatch = type.match(/0x1::coin::CoinStore<(.+)>/);
       if (coinMatch) {
@@ -249,7 +253,7 @@ export async function loadWalletData(account: string) {
         const raw = BigInt(data?.coin?.value || 0);
         const known = catalog.find((item) => item.coinAddress === coinType);
         pushUnique(coins, {
-          symbol: known?.symbol || coinType.split('::').pop() || 'COIN',
+          symbol: known?.symbol || coinType.split("::").pop() || "COIN",
           type: coinType,
           coinType,
           decimals: known?.decimals || 8,
@@ -263,10 +267,10 @@ export async function loadWalletData(account: string) {
   }
 
   if (!coins.length) {
-    coins.push({ symbol: 'SUPRA', type: COIN, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: '0', raw: 0n });
+    coins.push({ symbol: "SUPRA", type: COIN, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: "0", raw: 0n });
   }
   if (!tokens.length) {
-    tokens.push({ symbol: 'SUPRA', type: SUPRA_META, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: '0', raw: 0n });
+    tokens.push({ symbol: "SUPRA", type: SUPRA_META, coinType: COIN, fa: SUPRA_META, decimals: 8, amount: "0", raw: 0n });
   }
 
   coins.sort((a, b) => Number(b.raw - a.raw));
@@ -275,11 +279,11 @@ export async function loadWalletData(account: string) {
 }
 
 function parseCoinType(type: string) {
-  const parts = type.replace(/^0x/, '').split('::');
+  const parts = type.replace(/^0x/, "").split("::");
   return {
-    address: (parts[0] || '').padStart(64, '0'),
-    module: parts[1] || '',
-    struct: parts[2] || '',
+    address: (parts[0] || "").padStart(64, "0"),
+    module: parts[1] || "",
+    struct: parts[2] || "",
   };
 }
 
@@ -297,23 +301,24 @@ export function sortDexlynPair(x: string, y: string, ax: string, ay: string) {
 
 export async function loadLocks(account: string): Promise<LockRecord[]> {
   const out: LockRecord[] = [];
+  const owner = account.startsWith("0x") ? account : `0x${account}`;
   for (const [mod, kind, types] of [
-    ['fa_lock', 'Token lock', [] as string[]],
-    ['lock', 'Coin lock', [COIN]],
-    ['dexlyn_lp', 'Dexlyn LP', [] as string[]],
+    ["lock", "Coin lock", [COIN]],
+    ["fa_lock", "Token lock", [] as string[]],
   ] as Array<[string, string, string[]]>) {
-    for (let id = 0; id < 16; id += 1) {
+    for (let id = 0; id < 12; id += 1) {
       try {
-        const preview = await view(`${PKG}::${mod}::preview`, types, [account, String(id)]);
+        const preview = await view(`${PKG}::${mod}::preview`, types, [owner, String(id)]);
         const row = Array.isArray(preview) ? preview : [];
-        const amount = String(row[2] ?? '0');
-        if (!amount || amount === '0') continue;
+        const amount = String(row[2] ?? "");
+        if (!amount || amount === "0") continue;
         out.push({
           id: String(id),
           kind,
+          module: mod,
           amount: formatAmount(amount),
           unlock: Number(row[1] ?? 0),
-          ready: row[3] === true || row[3] === 'true',
+          ready: row[3] === true || row[3] === "true",
         });
       } catch {
         continue;
@@ -323,22 +328,37 @@ export async function loadLocks(account: string): Promise<LockRecord[]> {
   return out;
 }
 
-export async function loadShare(account: string, creator = BUILDER) {
-  for (const id of ['0', '1', '2', '3']) {
+export async function loadShare(account: string) {
+  const owners = Array.from(new Set([account, BUILDER]));
+  for (const creator of owners) {
+    let count = 4;
     try {
-      const result = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, id, account]);
-      const row = Array.isArray(result) ? result : [];
-      if (!row.length) continue;
-      return {
-        id,
-        creator,
-        total: formatAmount(row[0] || 0),
-        vested: formatAmount(row[1] || 0),
-        claimed: formatAmount(row[2] || 0),
-        entitled: formatAmount(row[3] || 0),
-      };
+      const raw = await view(`${PKG}::vesting::team_vault_count`, [COIN], [creator]);
+      count = Math.max(Number(Array.isArray(raw) ? raw[0] : raw) || 0, 4);
     } catch {
-      continue;
+      try {
+        const raw = await view(`${PKG}::vesting::vault_count`, [COIN], [creator]);
+        count = Math.max(Number(Array.isArray(raw) ? raw[0] : raw) || 0, 4);
+      } catch {
+        count = 4;
+      }
+    }
+    for (let id = 0; id < Math.min(count, 12); id += 1) {
+      try {
+        const result = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), account]);
+        const row = Array.isArray(result) ? result : [];
+        if (!row.length) continue;
+        return {
+          id: String(id),
+          creator,
+          total: formatAmount(row[0] || 0),
+          vested: formatAmount(row[1] || 0),
+          claimed: formatAmount(row[2] || 0),
+          entitled: formatAmount(row[3] || 0),
+        };
+      } catch {
+        continue;
+      }
     }
   }
   return null;
@@ -347,7 +367,7 @@ export async function loadShare(account: string, creator = BUILDER) {
 export async function lookupName(name: string): Promise<NameResult> {
   const clean = name.trim().toLowerCase();
   const availableRaw = await view(`${PKG}::names::is_available`, [], [clean]).catch(() => [false]);
-  const available = availableRaw?.[0] === true || availableRaw?.[0] === 'true';
+  const available = availableRaw?.[0] === true || availableRaw?.[0] === "true";
   if (available) return { name: clean, available: true };
   const ownerRaw = await view(`${PKG}::names::owner_of`, [], [clean]).catch(() => []);
   const listing = await view(`${PKG}::names::listing_of`, [], [clean]).catch(() => null);
@@ -372,7 +392,7 @@ export async function sendEntry(
   const data = await provider.createRawTransactionData([
     account,
     0,
-    PKG.replace(/^0x/, ''),
+    PKG.replace(/^0x/, ""),
     module,
     fn,
     typeArgs,
@@ -382,15 +402,15 @@ export async function sendEntry(
   return provider.sendTransaction({
     data,
     from: account,
-    to: '',
-    value: '',
+    to: "",
+    value: "",
     chainId: String(CHAIN),
   });
 }
 
 export const actions = {
   migrate: (provider: Provider, account: string) =>
-    sendEntry(provider, account, 'fa_lock', 'ensure_store', [], []),
+    sendEntry(provider, account, "fa_lock", "ensure_store", [], []),
   lockToken: (
     provider: Provider,
     account: string,
@@ -399,13 +419,13 @@ export const actions = {
     unlock: number,
   ) => {
     if (token.coinType) {
-      return sendEntry(provider, account, 'lock', 'create_lock', [token.coinType], [
+      return sendEntry(provider, account, "lock", "create_lock", [token.coinType], [
         bcsAddr(account),
         bcsU64(unlock),
         bcsU64(amount),
       ]);
     }
-    return sendEntry(provider, account, 'fa_lock', 'create_lock', [], [
+    return sendEntry(provider, account, "fa_lock", "create_lock", [], [
       bcsAddr(token.fa || token.type),
       bcsAddr(account),
       bcsU64(unlock),
@@ -414,20 +434,29 @@ export const actions = {
   },
   lockLp: (provider: Provider, account: string, x: string, y: string, ax: string, ay: string, unlock: number) => {
     const pair = sortDexlynPair(x, y, ax, ay);
-    return sendEntry(provider, account, 'dexlyn_lp', 'add_and_lock', [pair.x, pair.y, CURVE], [bcsU64(pair.ax), bcsU64(pair.ay), bcsU64(unlock)]);
+    return sendEntry(provider, account, "dexlyn_lp", "add_and_lock", [pair.x, pair.y, CURVE], [bcsU64(pair.ax), bcsU64(pair.ay), bcsU64(unlock)]);
   },
+  claimLock: (provider: Provider, account: string, moduleName: string, id: string) =>
+    sendEntry(
+      provider,
+      account,
+      moduleName,
+      "claim",
+      moduleName === "lock" ? [COIN] : [],
+      [bcsAddr(account), bcsU64(id)],
+    ),
   createVault: (provider: Provider, account: string, recipient: string, amount: string, start: number, end: number) =>
-    sendEntry(provider, account, 'vesting', 'create_team_vault', [COIN], [bcsAddrVec([recipient]), bcsU64Vec([10000]), bcsU8(1), bcsU64(start), bcsU64(start), bcsU64(end), bcsU64(amount)]),
+    sendEntry(provider, account, "vesting", "create_team_vault", [COIN], [bcsAddrVec([recipient]), bcsU64Vec([10000]), bcsU8(1), bcsU64(start), bcsU64(start), bcsU64(end), bcsU64(amount)]),
   claimShare: (provider: Provider, account: string, creator: string, id: string) =>
-    sendEntry(provider, account, 'vesting', 'claim_share', [COIN], [bcsAddr(creator), bcsU64(id)]),
+    sendEntry(provider, account, "vesting", "claim_share", [COIN], [bcsAddr(creator), bcsU64(id)]),
   registerName: (provider: Provider, account: string, name: string) =>
-    sendEntry(provider, account, 'names', 'register', [], [bcsStr(name)]),
+    sendEntry(provider, account, "names", "register", [], [bcsStr(name)]),
   listName: (provider: Provider, account: string, name: string, price: string) =>
-    sendEntry(provider, account, 'names', 'list_name', [], [bcsStr(name), bcsU64(price)]),
+    sendEntry(provider, account, "names", "list_name", [], [bcsStr(name), bcsU64(price)]),
   buyName: (provider: Provider, account: string, name: string) =>
-    sendEntry(provider, account, 'names', 'buy_name', [], [bcsStr(name)]),
+    sendEntry(provider, account, "names", "buy_name", [], [bcsStr(name)]),
   delistName: (provider: Provider, account: string, name: string) =>
-    sendEntry(provider, account, 'names', 'cancel_listing', [], [bcsStr(name)]),
+    sendEntry(provider, account, "names", "cancel_listing", [], [bcsStr(name)]),
   transferName: (provider: Provider, account: string, name: string, recipient: string) =>
-    sendEntry(provider, account, 'names', 'transfer', [], [bcsStr(name), bcsAddr(recipient)]),
+    sendEntry(provider, account, "names", "transfer", [], [bcsStr(name), bcsAddr(recipient)]),
 };
