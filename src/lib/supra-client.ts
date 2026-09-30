@@ -52,9 +52,28 @@ type CatalogItem = { symbol: string; decimals: number; coinType?: string; fa?: s
 
 const FALLBACK_TOKENS: CatalogItem[] = [
   { symbol: "SUPRA", decimals: 8, coinType: COIN, fa: SUPRA_META },
-  { symbol: "DAWGZ", decimals: 8, fa: "0x80f0251b74c76f1c477b9209ade65ffb5cfecd9b259875c3865ad645f6c33a3d" },
-  { symbol: "SPIKE", decimals: 8, fa: "0x07b66011900be87269647b5cce4902a04d3189982ae677a393b2046e55c92042" },
-  { symbol: "LUCKY", decimals: 8 },
+  {
+    symbol: "LUCKY",
+    decimals: 6,
+    coinType: "0x4205c82380bff5708cd7c59e0043a45890a457a6cdb60c9191d818958fd7ac26::LUCKY::LUCKY",
+    fa: "0x1cc2bc27c5134ffcdd80fddcfaa1b9a05f6c03649c9927429f95fc723174c0ae",
+  },
+  {
+    symbol: "SPIKE",
+    decimals: 8,
+    coinType: "0xfec116479f1fd3cb9732cc768e6061b0e45b178a610b9bc23c2143a6493e794::memecoins::SPIKE",
+    fa: "0xf199782bff16646c43de02fe1ca4244def5ea7abe0796a4f45002795e6f6ca35",
+  },
+  {
+    symbol: "DAWGZ",
+    decimals: 8,
+    fa: "0x80f0251b74c76f1c477b9209ade65ffb5cfecd9b259875c3865ad645f6c33a3d",
+  },
+  {
+    symbol: "SOLID",
+    decimals: 8,
+    fa: "0xaa925a2232144c11dfe855178e1d252a8d0d4f51f5572fc0ec34efa6333952ae",
+  },
 ];
 
 function cleanHex(value: string) {
@@ -193,6 +212,39 @@ function normalizeCoinType(value: string) {
   return String(value || "").replace(/^0x0+/, "0x").replace(/^0x1::/, "0x1::");
 }
 
+function collectCoinStoreTypes(resources: any[]): string[] {
+  const out: string[] = [];
+  const walk = (item: any) => {
+    const text = typeof item === "string" ? item : JSON.stringify(item || "");
+    const matches = text.match(/0x[a-fA-F0-9]+::coin::CoinStore<([^>]+)>/g) || [];
+    for (const match of matches) {
+      const inner = match.replace(/^.*CoinStore</, "").replace(/>$/, "");
+      if (inner && !out.includes(inner)) out.push(inner);
+    }
+    if (Array.isArray(item)) item.forEach(walk);
+  };
+  walk(resources);
+  return out;
+}
+
+async function accountResources(addr: string) {
+  const pages: any[] = [];
+  let cursor = "";
+  for (let i = 0; i < 4; i += 1) {
+    try {
+      const q = cursor ? `?start=${encodeURIComponent(cursor)}` : "";
+      const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`);
+      const list = json.Resources?.resource || json.resource || json;
+      if (Array.isArray(list)) pages.push(...list);
+      cursor = json.Resources?.cursor || json.cursor || "";
+      if (!cursor) break;
+    } catch {
+      break;
+    }
+  }
+  return pages;
+}
+
 function pushHeld(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n && item.symbol !== "SUPRA") return;
   const key = (item.coinType || item.fa || item.symbol).toLowerCase();
@@ -253,6 +305,23 @@ export async function loadWalletBasics(addr: string) {
 export async function loadWalletExtras(addr: string, already: CoinBalance[] = []) {
   const coins = [...already];
   const tokens: CoinBalance[] = [];
+
+  try {
+    const resources = await accountResources(addr);
+    for (const coinType of collectCoinStoreTypes(resources)) {
+      const raw = await coinBalance(addr, coinType);
+      const symbol = coinType.split("::").pop() || "COIN";
+      pushHeld(coins, {
+        symbol: symbol === "SupraCoin" ? "SUPRA" : symbol,
+        amount: formatAmount(raw, 8),
+        raw,
+        decimals: 8,
+        type: coinType,
+        coinType,
+      });
+    }
+  } catch {}
+
   for (const item of FALLBACK_TOKENS) {
     if (item.coinType) {
       const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
@@ -279,6 +348,7 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       });
     }
   }
+
   try {
     const catalog = await tokenCatalog();
     for (let i = 0; i < catalog.length; i += 4) {
@@ -311,6 +381,7 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       }));
     }
   } catch {}
+
   return { coins, tokens };
 }
 
