@@ -37,6 +37,7 @@ export type LockRecord = {
   amount: string;
   unlock: number;
   ready: boolean;
+  coinType?: string;
 };
 
 export type ShareRecord = {
@@ -377,30 +378,54 @@ function parsePreview(row: any) {
 
 export async function loadLocks(addr: string): Promise<LockRecord[]> {
   const out: LockRecord[] = [];
-  for (const mod of ["lock", "fa_lock"] as const) {
-    const types = mod === "lock" ? [COIN] : [];
+  const owner = "0x" + padAddr(addr);
+  const coinTypes = Array.from(new Set([COIN, ...FALLBACK_TOKENS.map((item) => item.coinType).filter(Boolean)])) as string[];
+
+  for (const coinType of coinTypes) {
     for (let id = 0; id < 8; id += 1) {
       try {
-        const row = await view(`${PKG}::${mod}::preview`, types, ["0x" + padAddr(addr), String(id)]);
+        const row = await view(`${PKG}::lock::preview`, [coinType], [owner, String(id)]);
         const parsed = parsePreview(row);
         if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
         if (asBig(parsed.amount) === 0n) continue;
         out.push({
-          module: mod,
-          kind: mod === "lock" ? "Coin lock" : "Token lock",
+          module: "lock",
+          kind: `${coinType.split("::").pop() || "Coin"} lock`,
           id: String(id),
           beneficiary: parsed.beneficiary,
           amount: parsed.amount,
           unlock: parsed.unlock,
           ready: parsed.ready,
+          coinType,
         });
       } catch {
         break;
       }
     }
   }
+
+  for (let id = 0; id < 8; id += 1) {
+    try {
+      const row = await view(`${PKG}::fa_lock::preview`, [], [owner, String(id)]);
+      const parsed = parsePreview(row);
+      if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
+      if (asBig(parsed.amount) === 0n) continue;
+      out.push({
+        module: "fa_lock",
+        kind: "Token lock",
+        id: String(id),
+        beneficiary: parsed.beneficiary,
+        amount: parsed.amount,
+        unlock: parsed.unlock,
+        ready: parsed.ready,
+      });
+    } catch {
+      break;
+    }
+  }
   return out;
 }
+
 
 export async function loadShare(addr: string, extraCreator = ""): Promise<ShareRecord | null> {
   const safe = (value: string) => {
@@ -527,8 +552,8 @@ export const actions = {
     ]);
   },
 
-  claimLock: (provider: Provider, account: string, mod: "lock" | "fa_lock", id: string) =>
-    sendEntry(provider, account, mod, "claim", mod === "lock" ? [COIN] : [], [bcsAddr(account), bcsU64(id)]),
+  claimLock: (provider: Provider, account: string, mod: "lock" | "fa_lock", id: string, coinType = COIN) =>
+    sendEntry(provider, account, mod, "claim", mod === "lock" ? [coinType] : [], [bcsAddr(account), bcsU64(id)]),
 
   lockLp: (
     provider: Provider,

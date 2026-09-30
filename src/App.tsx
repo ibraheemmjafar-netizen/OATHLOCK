@@ -271,7 +271,7 @@ function OathlockApp() {
             ) : (
               <Button onClick={connect}><Wallet className="h-4 w-4" /> Connect</Button>
             )}
-            <button className="md:hidden" onClick={() => setMenuOpen((v) => !v)}><Menu className="h-5 w-5" /></button>
+            <Button className="mt-3" disabled={!lock.ready || busy} onClick={() => run("Claim lock", () => actions.claimLock(provider!, account, lock.module, lock.id, lock.coinType || "0x1::supra_coin::SupraCoin"))}>Claim</Button>
           </div>
         </div>
       </header>
