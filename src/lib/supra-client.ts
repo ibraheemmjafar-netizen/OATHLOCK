@@ -53,21 +53,25 @@ type CatalogItem = { symbol: string; decimals: number; coinType?: string; fa?: s
 
 const FALLBACK_TOKENS: CatalogItem[] = [
   { symbol: "SUPRA", decimals: 8, coinType: COIN, fa: SUPRA_META },
-  {
-    symbol: "LUCKY",
-    decimals: 6,
-    coinType: "0x4205c82380bff5708cd7c59e0043a45890a457a6cdb60c9191d818958fd7ac26::LUCKY::LUCKY",
-    fa: "0x1cc2bc27c5134ffcdd80fddcfaa1b9a05f6c03649c9927429f95fc723174c0ae",
-  },
-  {
-    symbol: "SPIKE",
-    decimals: 8,
-    coinType: "0xfec116479f1fd3cb9732cc768e6061b0e45b178a610b9bc23c2143a6493e794::memecoins::SPIKE",
-    fa: "0xf199782bff16646c43de02fe1ca4244def5ea7abe0796a4f45002795e6f6ca35",
-  },
-  { symbol: "DAWGZ", decimals: 8, fa: "0x80f0251b74c76f1c477b9209ade65ffb5cfecd9b259875c3865ad645f6c33a3d" },
+  { symbol: "LUCKY", decimals: 6, coinType: "0x4205c82380bff5708cd7c59e0043a45890a457a6cdb60c9191d818958fd7ac26::LUCKY::LUCKY", fa: "0x1cc2bc27c5134ffcdd80fddcfaa1b9a05f6c03649c9927429f95fc723174c0ae" },
+  { symbol: "SPIKE", decimals: 3, coinType: "0xfec116479f1fd3cb9732cc768e6061b0e45b178a610b9bc23c2143a6493e794::memecoins::SPIKE", fa: "0xf199782bff16646c43de02fe1ca4244def5ea7abe0796a4f45002795e6f6ca35" },
+  { symbol: "DXLYN", decimals: 8, coinType: "0xc7ce2262e340a8677529d509975f89305a71b03010c8865f8fc2d26c73b077f4::dxlyn_coin::DXLYN", fa: "0xb364044ae268b711da93abe55ac1635246a1e9b3cb37df4ce021ed0fe40b165e" },
+  { symbol: "dexUSDC", decimals: 6, coinType: "0x8f7d16ade319b0fce368ca6cdb98589c4527ce7f5b51e544a9e68e719934458b::hyper_coin::DexlynUSDC", fa: "0xbb3c1ca1ef67b1a994f2463978695c7bf890710182f75edef05ad08490be3658" },
+  { symbol: "CASH", decimals: 8, coinType: "0x9176f70f125199a3e3d5549ce795a8e906eed75901d535ded623802f15ae3637::cdp_multi::CASH", fa: "0x4b28b64c9fa2e5a10f8fb57f1df741f40f58d1eafcfb6ae7c6cfbc68c83d32f7" },
+  { symbol: "JOSH", decimals: 6, coinType: "0x4742d10cab62d51473bb9b4752046705d40f056abcaa59bcb266078c5945b864::JOSH::JOSH", fa: "0x459b5670239b5ddf864138012df750d0e5210628e299a48e4d94f75711e82fc3" },
+  { symbol: "DAWGZ", decimals: 6, coinType: "0xb8e94e7204d8eeb565a653d262ae6f7434a3a452e2aaf624810b33dfa3b64d09::DAWGZ::DAWGZ", fa: "0x9d998eff3c742a24139590c57d02ff43a4e536a66bb415edabca6979f081bf1" },
   { symbol: "SOLID", decimals: 8, fa: "0xaa925a2232144c11dfe855178e1d252a8d0d4f51f5572fc0ec34efa6333952ae" },
 ];
+
+export const DEX_COINS: CoinBalance[] = FALLBACK_TOKENS.filter((item) => item.coinType).map((item) => ({
+  symbol: item.symbol,
+  amount: "0",
+  raw: 0n,
+  decimals: item.decimals,
+  type: item.coinType as string,
+  coinType: item.coinType,
+  fa: item.fa,
+}));
 
 function cleanHex(value: string) {
   return String(value || "").trim().replace(/^0x/i, "").toLowerCase();
@@ -249,6 +253,33 @@ function pushHeld(list: CoinBalance[], item: CoinBalance) {
   list.push(item);
 }
 
+async function readToken(addr: string, item: CatalogItem, coins: CoinBalance[], tokens: CoinBalance[]) {
+  if (item.coinType) {
+    const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
+    pushHeld(coins, {
+      symbol: item.symbol,
+      amount: formatAmount(raw, item.decimals),
+      raw,
+      decimals: item.decimals,
+      type: item.coinType,
+      coinType: item.coinType,
+      fa: item.fa,
+    });
+  }
+  if (item.fa) {
+    const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
+    pushHeld(tokens, {
+      symbol: item.symbol,
+      amount: formatAmount(raw, item.decimals),
+      raw,
+      decimals: item.decimals,
+      type: item.fa,
+      fa: item.fa,
+      coinType: item.coinType,
+    });
+  }
+}
+
 let catalogCache: CatalogItem[] | null = null;
 
 async function tokenCatalog(): Promise<CatalogItem[]> {
@@ -264,8 +295,8 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
       extra.push({
         symbol: row.symbol || row.name || "TOKEN",
         decimals: Number(row.decimals ?? 8),
-        coinType: row.coinAddress || row.coin_type || row.coinType,
-        fa: row.faAddress || row.fa_address || row.fa || row.address,
+        coinType: row.coinAddress || row.coin_type || row.coinType || undefined,
+        fa: row.faAddress || row.fa_address || row.fa || row.address || undefined,
       });
     }
   } catch {}
@@ -274,7 +305,7 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
     const key = `${item.symbol}:${item.coinType || ""}:${item.fa || ""}`.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
-    return true;
+    return !!(item.coinType || item.fa);
   });
   return catalogCache;
 }
@@ -314,61 +345,12 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
     }
   } catch {}
   for (const item of FALLBACK_TOKENS) {
-    if (item.coinType) {
-      const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
-      pushHeld(coins, {
-        symbol: item.symbol,
-        amount: formatAmount(raw, item.decimals),
-        raw,
-        decimals: item.decimals,
-        type: item.coinType,
-        coinType: item.coinType,
-        fa: item.fa,
-      });
-    }
-    if (item.fa) {
-      const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
-      pushHeld(tokens, {
-        symbol: item.symbol,
-        amount: formatAmount(raw, item.decimals),
-        raw,
-        decimals: item.decimals,
-        type: item.fa,
-        fa: item.fa,
-        coinType: item.coinType,
-      });
-    }
+    await readToken(addr, item, coins, tokens);
   }
   try {
     const catalog = await tokenCatalog();
     for (let i = 0; i < catalog.length; i += 4) {
-      const batch = catalog.slice(i, i + 4);
-      await Promise.all(batch.map(async (item) => {
-        if (item.coinType) {
-          const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
-          pushHeld(coins, {
-            symbol: item.symbol,
-            amount: formatAmount(raw, item.decimals),
-            raw,
-            decimals: item.decimals,
-            type: item.coinType,
-            coinType: item.coinType,
-            fa: item.fa,
-          });
-        }
-        if (item.fa) {
-          const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
-          pushHeld(tokens, {
-            symbol: item.symbol,
-            amount: formatAmount(raw, item.decimals),
-            raw,
-            decimals: item.decimals,
-            type: item.fa,
-            fa: item.fa,
-            coinType: item.coinType,
-          });
-        }
-      }));
+      await Promise.all(catalog.slice(i, i + 4).map((item) => readToken(addr, item, coins, tokens)));
     }
   } catch {}
   return { coins, tokens };
