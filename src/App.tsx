@@ -45,6 +45,15 @@ declare global {
 const initialUnlock = unixToInput(Math.floor(Date.now() / 1000) + 180);
 const initialStart = unixToInput(Math.floor(Date.now() / 1000));
 const initialEnd = unixToInput(Math.floor(Date.now() / 1000) + 7 * 86400);
+const SUPRA_TOKEN: CoinBalance = {
+  symbol: "SUPRA",
+  amount: "0",
+  raw: 0n,
+  decimals: 8,
+  type: "0x1::supra_coin::SupraCoin",
+  coinType: "0x1::supra_coin::SupraCoin",
+  fa: "0xa",
+};
 
 function futureUnix(value: string) {
   const ts = dateToUnix(value);
@@ -118,7 +127,6 @@ function OathlockApp() {
   const [locks, setLocks] = useState<LockRecord[]>([]);
   const [share, setShare] = useState<Share>(null);
   const [nameResult, setNameResult] = useState<NameResult | null>(null);
-
   const [tokenKey, setTokenKey] = useState("");
   const [lockAmount, setLockAmount] = useState("0.001");
   const [lockDate, setLockDate] = useState(initialUnlock);
@@ -151,23 +159,24 @@ function OathlockApp() {
       seen.add(alt);
       out.push(item);
     }
-    return out;
-  }, [coins, tokens]);
+    return out.length ? out : (account ? [SUPRA_TOKEN] : []);
+  }, [coins, tokens, account]);
 
-  const selectedToken = heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0];
-  const coinOptions = coins.filter((item) => item.coinType);
+  const selectedToken = heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0] || SUPRA_TOKEN;
+  const coinOptions = (coins.length ? coins : [SUPRA_TOKEN]).filter((item) => item.coinType);
   const firstCoin = coinOptions.find((item) => (item.coinType || item.type) === lpA) || coinOptions[0];
   const secondCoin = coinOptions.find((item) => (item.coinType || item.type) === lpB) || coinOptions[1] || coinOptions[0];
   const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
   const refresh = useCallback(async (addr = account, creator = vaultCreator) => {
     if (!addr) return;
+    setCoins((current) => current.length ? current : [SUPRA_TOKEN]);
     const basics = await loadWalletBasics(addr);
     setCoins(basics.coins);
     setTokens(basics.tokens);
-    setTokenKey((current) => current || (basics.coins[0]?.coinType || basics.coins[0]?.type || ""));
-    setLpA((current) => current || (basics.coins[0]?.coinType || basics.coins[0]?.type || ""));
-    setLpB((current) => current || ((basics.coins[1] || basics.coins[0])?.coinType || (basics.coins[1] || basics.coins[0])?.type || ""));
+    setTokenKey((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
+    setLpA((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
+    setLpB((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
     try {
       const nextLocks = await loadLocks(addr);
       if (nextLocks.length) setLocks(nextLocks);
@@ -218,6 +227,7 @@ function OathlockApp() {
       await next.changeNetwork?.({ chainId: String(CHAIN) });
     } catch {}
     setProvider(next);
+    setCoins([SUPRA_TOKEN]);
     setAccount(accounts[0]);
     setNotice({ tone: "success", text: `Connected ${shortAddress(accounts[0])} on Supra mainnet.` });
   }
@@ -294,20 +304,18 @@ function OathlockApp() {
             <Field label="Token" hint="Wallet holdings">
               <select
                 className={inputClass()}
-                value={selectedToken ? (selectedToken.coinType || selectedToken.fa || selectedToken.type) : "0x1::supra_coin::SupraCoin"}
+                value={selectedToken.coinType || selectedToken.fa || selectedToken.type}
                 onChange={(e) => setTokenKey(e.target.value)}
               >
-                {heldTokens.length ? heldTokens.map((item) => (
+                {heldTokens.map((item) => (
                   <option key={item.coinType || item.fa || item.type} value={item.coinType || item.fa || item.type}>
                     {item.symbol} · {item.amount}
                   </option>
-                )) : (
-                  <option value="0x1::supra_coin::SupraCoin">{account ? "SUPRA" : "Connect to load tokens"}</option>
-                )}
+                ))}
               </select>
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <Field label="Amount" hint={selectedToken?.symbol || "SUPRA"}>
+              <Field label="Amount" hint={selectedToken.symbol}>
                 <input className={inputClass()} value={lockAmount} onChange={(e) => setLockAmount(e.target.value)} />
               </Field>
               <Field label="Unlock date">
@@ -321,10 +329,8 @@ function OathlockApp() {
               <Button variant="secondary" disabled={!account || busy} onClick={() => run("Prepare store", () => actions.migrate(provider!, account))}>
                 Prepare store
               </Button>
-              <Button disabled={!account || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken || {
-                symbol: "SUPRA", amount: "0", raw: 0n, decimals: 8, type: "0x1::supra_coin::SupraCoin", coinType: "0x1::supra_coin::SupraCoin",
-              }, toAmount(lockAmount, selectedToken?.decimals || 8), futureUnix(lockDate)))}>
-                Lock {selectedToken?.symbol || "token"} <ArrowUpRight className="h-4 w-4" />
+              <Button disabled={!account || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), futureUnix(lockDate)))}>
+                Lock {selectedToken.symbol} <ArrowUpRight className="h-4 w-4" />
               </Button>
             </div>
           </div>

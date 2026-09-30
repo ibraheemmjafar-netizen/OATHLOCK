@@ -153,9 +153,7 @@ export async function view(fn: string, typeArgs: string[], args: unknown[]) {
       });
       if (json?.message) continue;
       return json.result || json.response?.result || json;
-    } catch {
-      // next
-    }
+    } catch {}
   }
   throw new Error("View failed: " + fn);
 }
@@ -195,39 +193,6 @@ function normalizeCoinType(value: string) {
   return String(value || "").replace(/^0x0+/, "0x").replace(/^0x1::/, "0x1::");
 }
 
-function collectCoinStoreTypes(resources: any[]): string[] {
-  const out: string[] = [];
-  const walk = (item: any) => {
-    const text = typeof item === "string" ? item : JSON.stringify(item || "");
-    const matches = text.match(/0x[a-fA-F0-9]+::coin::CoinStore<([^>]+)>/g) || [];
-    for (const match of matches) {
-      const inner = match.replace(/^.*CoinStore</, "").replace(/>$/, "");
-      if (inner && !out.includes(inner)) out.push(inner);
-    }
-    if (Array.isArray(item)) item.forEach(walk);
-  };
-  walk(resources);
-  return out;
-}
-
-async function accountResources(addr: string) {
-  const pages: any[] = [];
-  let cursor = "";
-  for (let i = 0; i < 3; i += 1) {
-    try {
-      const q = cursor ? `?start=${encodeURIComponent(cursor)}` : "";
-      const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`);
-      const list = json.Resources?.resource || json.resource || json;
-      if (Array.isArray(list)) pages.push(...list);
-      cursor = json.Resources?.cursor || json.cursor || "";
-      if (!cursor) break;
-    } catch {
-      break;
-    }
-  }
-  return pages;
-}
-
 function pushHeld(list: CoinBalance[], item: CoinBalance) {
   if (item.raw <= 0n && item.symbol !== "SUPRA") return;
   const key = (item.coinType || item.fa || item.symbol).toLowerCase();
@@ -258,9 +223,7 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
         fa: row.faAddress || row.fa_address || row.fa || row.address,
       });
     }
-  } catch {
-    // fallback
-  }
+  } catch {}
   const seen = new Set<string>();
   catalogCache = extra.filter((item) => {
     const key = `${item.symbol}:${item.coinType || ""}:${item.fa || ""}`.toLowerCase();
@@ -272,71 +235,82 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
 }
 
 export async function loadWalletBasics(addr: string) {
-  const coins: CoinBalance[] = [];
-  const tokens: CoinBalance[] = [];
   const supra = await coinBalance(addr, COIN);
-  coins.push({
-    symbol: "SUPRA",
-    amount: formatAmount(supra, 8),
-    raw: supra,
-    decimals: 8,
-    type: COIN,
-    coinType: COIN,
-    fa: SUPRA_META,
-  });
-  try {
-    const resources = await accountResources(addr);
-    for (const coinType of collectCoinStoreTypes(resources)) {
-      const raw = await coinBalance(addr, coinType);
-      const symbol = coinType.split("::").pop() || "COIN";
-      pushHeld(coins, {
-        symbol: symbol === "SupraCoin" ? "SUPRA" : symbol,
-        amount: formatAmount(raw, 8),
-        raw,
-        decimals: 8,
-        type: coinType,
-        coinType,
-      });
-    }
-  } catch {
-    // SUPRA already present
-  }
-  return { coins, tokens };
+  return {
+    coins: [{
+      symbol: "SUPRA",
+      amount: formatAmount(supra, 8),
+      raw: supra,
+      decimals: 8,
+      type: COIN,
+      coinType: COIN,
+      fa: SUPRA_META,
+    }],
+    tokens: [] as CoinBalance[],
+  };
 }
 
 export async function loadWalletExtras(addr: string, already: CoinBalance[] = []) {
   const coins = [...already];
   const tokens: CoinBalance[] = [];
-  const catalog = await tokenCatalog();
-  for (let i = 0; i < catalog.length; i += 4) {
-    const batch = catalog.slice(i, i + 4);
-    await Promise.all(batch.map(async (item) => {
-      if (item.coinType) {
-        const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
-        pushHeld(coins, {
-          symbol: item.symbol,
-          amount: formatAmount(raw, item.decimals),
-          raw,
-          decimals: item.decimals,
-          type: item.coinType,
-          coinType: item.coinType,
-          fa: item.fa,
-        });
-      }
-      if (item.fa) {
-        const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
-        pushHeld(tokens, {
-          symbol: item.symbol,
-          amount: formatAmount(raw, item.decimals),
-          raw,
-          decimals: item.decimals,
-          type: item.fa,
-          fa: item.fa,
-          coinType: item.coinType,
-        });
-      }
-    }));
+  for (const item of FALLBACK_TOKENS) {
+    if (item.coinType) {
+      const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
+      pushHeld(coins, {
+        symbol: item.symbol,
+        amount: formatAmount(raw, item.decimals),
+        raw,
+        decimals: item.decimals,
+        type: item.coinType,
+        coinType: item.coinType,
+        fa: item.fa,
+      });
+    }
+    if (item.fa) {
+      const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
+      pushHeld(tokens, {
+        symbol: item.symbol,
+        amount: formatAmount(raw, item.decimals),
+        raw,
+        decimals: item.decimals,
+        type: item.fa,
+        fa: item.fa,
+        coinType: item.coinType,
+      });
+    }
   }
+  try {
+    const catalog = await tokenCatalog();
+    for (let i = 0; i < catalog.length; i += 4) {
+      const batch = catalog.slice(i, i + 4);
+      await Promise.all(batch.map(async (item) => {
+        if (item.coinType) {
+          const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
+          pushHeld(coins, {
+            symbol: item.symbol,
+            amount: formatAmount(raw, item.decimals),
+            raw,
+            decimals: item.decimals,
+            type: item.coinType,
+            coinType: item.coinType,
+            fa: item.fa,
+          });
+        }
+        if (item.fa) {
+          const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
+          pushHeld(tokens, {
+            symbol: item.symbol,
+            amount: formatAmount(raw, item.decimals),
+            raw,
+            decimals: item.decimals,
+            type: item.fa,
+            fa: item.fa,
+            coinType: item.coinType,
+          });
+        }
+      }));
+    }
+  } catch {}
   return { coins, tokens };
 }
 
@@ -413,9 +387,7 @@ export async function loadShare(addr: string, extraCreator = ""): Promise<ShareR
             claimed: formatAmount(list[2]),
             entitled: formatAmount(list[3]),
           };
-        } catch {
-          // next
-        }
+        } catch {}
       }
     }
   }
@@ -513,14 +485,7 @@ export const actions = {
   },
 
   claimLock: (provider: Provider, account: string, mod: "lock" | "fa_lock", id: string) =>
-    sendEntry(
-      provider,
-      account,
-      mod,
-      "claim",
-      mod === "lock" ? [COIN] : [],
-      [bcsAddr(account), bcsU64(id)],
-    ),
+    sendEntry(provider, account, mod, "claim", mod === "lock" ? [COIN] : [], [bcsAddr(account), bcsU64(id)]),
 
   lockLp: (
     provider: Provider,
@@ -556,10 +521,7 @@ export const actions = {
     ]),
 
   claimShare: (provider: Provider, account: string, creator: string, id: string | number) =>
-    sendEntry(provider, account, "vesting", "claim_share", [COIN], [
-      bcsAddr(creator),
-      bcsU64(id),
-    ]),
+    sendEntry(provider, account, "vesting", "claim_share", [COIN], [bcsAddr(creator), bcsU64(id)]),
 
   registerName: (provider: Provider, account: string, name: string) =>
     sendEntry(provider, account, "names", "register", [], [bcsStr(name)]),
