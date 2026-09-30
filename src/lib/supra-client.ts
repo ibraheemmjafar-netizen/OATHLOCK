@@ -5,7 +5,7 @@ export const BUILDER = PKG;
 export const RPC = "https://rpc-mainnet.supra.com";
 export const COIN = "0x1::supra_coin::SupraCoin";
 export const SUPRA_META = "0xa";
-export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001";
+export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000001";
 export const DEXLYN = "0x0dc694898dff98a1b0447e0992d0413e123ea80da1021d464a4fbaf0265870d8";
 export const CURVE = `${DEXLYN}::curves::Uncorrelated`;
 export const CHAIN = 8;
@@ -84,6 +84,12 @@ export function padAddr(value: string) {
   return hex.padStart(64, "0");
 }
 
+function padMeta(value: string) {
+  const hex = cleanHex(value);
+  if (!hex || hex.length > 64 || /[^0-9a-f]/.test(hex)) return "";
+  return "0x" + hex.padStart(64, "0");
+}
+
 export function shortAddress(value: string) {
   const hex = "0x" + padAddr(value);
   return hex.slice(0, 6) + "..." + hex.slice(-4);
@@ -148,9 +154,9 @@ export function bcsU64Vec(values: Array<string | number>) {
   return ser.getBytes();
 }
 
-async function rpc<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+async function rpc<T = unknown>(path: string, init?: RequestInit, ms = 4000): Promise<T> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(RPC + path, { ...init, signal: ctrl.signal });
     return (await res.json()) as T;
@@ -161,18 +167,13 @@ async function rpc<T = unknown>(path: string, init?: RequestInit): Promise<T> {
 
 export async function view(fn: string, typeArgs: string[], args: unknown[]) {
   const body = { function: fn, type_arguments: typeArgs, arguments: args };
-  for (const path of ["/rpc/v3/view", "/rpc/v2/view", "/rpc/v1/view"]) {
-    try {
-      const json: any = await rpc(path, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (json?.message) continue;
-      return json.result || json.response?.result || json;
-    } catch {}
-  }
-  throw new Error("View failed: " + fn);
+  const json: any = await rpc("/rpc/v1/view", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, 4000);
+  if (json?.message) throw new Error(String(json.message));
+  return json.result || json.response?.result || json;
 }
 
 function asBig(value: unknown): bigint {
@@ -184,9 +185,18 @@ function asBig(value: unknown): bigint {
   return 0n;
 }
 
+function normalizeCoinType(value: string) {
+  let type = String(value || "").trim();
+  if (!type) return "";
+  if (!type.startsWith("0x")) type = "0x" + type;
+  type = type.replace(/^0x0+/, "0x");
+  if (type === "0x") type = "0x0";
+  return type;
+}
+
 async function coinBalance(addr: string, coinType: string) {
   try {
-    const r = await view("0x1::coin::balance", [coinType], ["0x" + padAddr(addr)]);
+    const r = await view("0x1::coin::balance", [normalizeCoinType(coinType)], ["0x" + padAddr(addr)]);
     return asBig(r);
   } catch {
     return 0n;
@@ -195,25 +205,27 @@ async function coinBalance(addr: string, coinType: string) {
 
 async function faBalance(addr: string, meta: string) {
   const owner = "0x" + padAddr(addr);
-  const metadata = meta.startsWith("0x") ? meta : "0x" + meta;
-  for (const typeArg of ["0x1::object::ObjectCore", "0x1::fungible_asset::Metadata"]) {
+  const metadata = padMeta(meta);
+  if (!metadata) return 0n;
+  const attempts: Array<[string, unknown[]]> = [
+    ["0x1::fungible_asset::Metadata", [owner, metadata]],
+    ["0x1::fungible_asset::Metadata", [owner, { inner: metadata }]],
+    ["0x1::object::ObjectCore", [owner, metadata]],
+    ["0x1::object::ObjectCore", [owner, { inner: metadata }]],
+  ];
+  for (const [typeArg, args] of attempts) {
     try {
-      const r = await view("0x1::primary_fungible_store::balance", [typeArg], [owner, metadata]);
-      const n = asBig(r);
+      const n = asBig(await view("0x1::primary_fungible_store::balance", [typeArg], args));
       if (n > 0n) return n;
     } catch {}
   }
   return 0n;
 }
 
-function normalizeCoinType(value: string) {
-  return String(value || "").replace(/^0x0+/, "0x").replace(/^0x1::/, "0x1::");
-}
-
 function collectCoinStoreTypes(resources: any[]): string[] {
   const out: string[] = [];
   const add = (inner: string) => {
-    const type = inner.replace(/^0x0+/, "0x").replace(/^0x1::/, "0x1::").trim();
+    const type = normalizeCoinType(inner);
     if (type && !out.includes(type)) out.push(type);
   };
   const walk = (item: any) => {
@@ -223,6 +235,12 @@ function collectCoinStoreTypes(resources: any[]): string[] {
     } else if (Array.isArray(item)) {
       item.forEach(walk);
     } else if (item && typeof item === "object") {
+      if (item.module === "coin" && item.name === "CoinStore" && Array.isArray(item.type_args)) {
+        for (const arg of item.type_args) {
+          const s = arg?.struct;
+          if (s?.module && s?.name) add(`${s.address || "0x1"}::${s.module}::${s.name}`);
+        }
+      }
       Object.values(item).forEach(walk);
     }
   };
@@ -236,7 +254,7 @@ async function accountResources(addr: string) {
   for (let i = 0; i < 4; i += 1) {
     try {
       const q = cursor ? `?start=${encodeURIComponent(cursor)}` : "";
-      const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`);
+      const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`, undefined, 5000);
       const list = json.Resources?.resource || json.resource || json;
       if (Array.isArray(list)) pages.push(...list);
       cursor = json.Resources?.cursor || json.cursor || "";
@@ -261,7 +279,7 @@ function pushHeld(list: CoinBalance[], item: CoinBalance) {
 
 async function readToken(addr: string, item: CatalogItem, coins: CoinBalance[], tokens: CoinBalance[]) {
   if (item.coinType) {
-    const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
+    const raw = await coinBalance(addr, item.coinType);
     pushHeld(coins, {
       symbol: item.symbol,
       amount: formatAmount(raw, item.decimals),
@@ -293,13 +311,13 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
   const extra: CatalogItem[] = [...FALLBACK_TOKENS];
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const timer = setTimeout(() => ctrl.abort(), 5000);
     const list = await fetch(TOKEN_LIST, { signal: ctrl.signal }).then((r) => r.json());
     clearTimeout(timer);
     const rows = Array.isArray(list) ? list : list.tokens || list.data || [];
     for (const row of rows) {
       extra.push({
-        symbol: row.symbol || row.name || "TOKEN",
+        symbol: row.officialSymbol || row.symbol || row.name || "TOKEN",
         decimals: Number(row.decimals ?? 8),
         coinType: row.coinAddress || row.coin_type || row.coinType || undefined,
         fa: row.faAddress || row.fa_address || row.fa || row.address || undefined,
@@ -350,15 +368,11 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       });
     }
   } catch {}
-  for (const item of FALLBACK_TOKENS) {
-    await readToken(addr, item, coins, tokens);
+
+  const catalog = await tokenCatalog();
+  for (let i = 0; i < catalog.length; i += 8) {
+    await Promise.all(catalog.slice(i, i + 8).map((item) => readToken(addr, item, coins, tokens)));
   }
-  try {
-    const catalog = await tokenCatalog();
-    for (let i = 0; i < catalog.length; i += 4) {
-      await Promise.all(catalog.slice(i, i + 4).map((item) => readToken(addr, item, coins, tokens)));
-    }
-  } catch {}
   return { coins, tokens };
 }
 
