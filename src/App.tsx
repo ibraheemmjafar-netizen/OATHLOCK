@@ -24,6 +24,7 @@ import {
   loadWalletBasics,
   loadWalletExtras,
   lookupName,
+  padAddr,
   shortAddress,
   toAmount,
   unixToInput,
@@ -61,6 +62,14 @@ function futureUnix(value: string) {
     throw new Error("Unlock time must be in the future. Press 3 minute test lock.");
   }
   return ts;
+}
+
+function sameAddr(a: string, b: string) {
+  try {
+    return padAddr(a) === padAddr(b);
+  } catch {
+    return false;
+  }
 }
 
 function Button({
@@ -163,23 +172,22 @@ function OathlockApp() {
   }, [coins, tokens, account]);
 
   const selectedToken = heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0] || SUPRA_TOKEN;
-  const coinOptions = (coins.length ? coins : [SUPRA_TOKEN]).filter((item) => item.coinType);
-  const firstCoin = coinOptions.find((item) => (item.coinType || item.type) === lpA) || coinOptions[0];
-  const secondCoin = coinOptions.find((item) => (item.coinType || item.type) === lpB) || coinOptions[1] || coinOptions[0];
+  const coinOptions = heldTokens.filter((item) => item.coinType);
+  const firstCoin = coinOptions.find((item) => item.coinType === lpA) || coinOptions[0];
+  const secondCoin = coinOptions.find((item) => item.coinType === lpB) || coinOptions.find((item) => item.coinType !== firstCoin?.coinType) || coinOptions[1] || coinOptions[0];
   const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
   const refresh = useCallback(async (addr = account, creator = vaultCreator) => {
     if (!addr) return;
-    setCoins((current) => current.length ? current : [SUPRA_TOKEN]);
     const basics = await loadWalletBasics(addr);
-    setCoins(basics.coins);
-    setTokens(basics.tokens);
+    setCoins((prev) => {
+      const supra = basics.coins[0];
+      const rest = prev.filter((row) => row.symbol !== "SUPRA");
+      return supra ? [supra, ...rest] : prev;
+    });
     setTokenKey((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
-    setLpA((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
-    setLpB((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
     try {
-      const nextLocks = await loadLocks(addr);
-      if (nextLocks.length) setLocks(nextLocks);
+      setLocks(await loadLocks(addr));
     } catch {}
     try {
       setShare(await loadShare(addr, creator));
@@ -370,7 +378,7 @@ function OathlockApp() {
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Dexlyn LP lock</h2>
-              <p className="text-sm text-white/50">Pick two different coins.</p>
+              <p className="text-sm text-white/50">Pick two different coins. StarKey only opens after that.</p>
             </div>
             <Button variant="ghost" disabled={!firstCoin || !secondCoin} onClick={() => {
               if (!firstCoin || !secondCoin) return;
@@ -404,7 +412,7 @@ function OathlockApp() {
             </Field>
             <Button disabled={!account || !firstCoin || !secondCoin || busy} onClick={() => {
               if (!firstCoin?.coinType || !secondCoin?.coinType || firstCoin.coinType === secondCoin.coinType) {
-                setNotice({ tone: "error", text: "Pick two different coins." });
+                setNotice({ tone: "error", text: "Dexlyn needs two different coins. Wait for LUCKY/SPIKE to load, then pick one in each box." });
                 return;
               }
               run("Dexlyn LP lock", () => actions.lockLp(
@@ -453,7 +461,7 @@ function OathlockApp() {
 
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
-            <p className="mb-4 text-sm text-white/50">Connect the recipient wallet. Paste the creator 0x.</p>
+            <p className="mb-4 text-sm text-white/50">Connect the receiving wallet. Paste the creator 0x. The creator cannot claim.</p>
             <Field label="Vault created by" hint="Creator 0x">
               <input className={inputClass()} value={vaultCreator} placeholder="0x of the wallet that created the vault" onChange={(e) => setVaultCreator(e.target.value.trim())} />
             </Field>
@@ -470,7 +478,14 @@ function OathlockApp() {
             ) : (
               <p className="mt-4 text-sm text-white/45">No share found for this wallet yet.</p>
             )}
-            <Button className="mt-4" disabled={!account || !share || busy || claimed} onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}>
+            <Button className="mt-4" disabled={!account || !share || busy || claimed} onClick={() => {
+              if (!share) return;
+              if (!sameAddr(account, share.beneficiary)) {
+                setNotice({ tone: "error", text: "Connect the receiving wallet, not the creator, then claim." });
+                return;
+              }
+              run("Claim share", () => actions.claimShare(provider!, account, share.creator, share.id));
+            }}>
               {claimed ? "Already claimed" : "Claim vested SUPRA"}
             </Button>
           </div>

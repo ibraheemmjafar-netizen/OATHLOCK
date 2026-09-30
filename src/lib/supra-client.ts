@@ -41,6 +41,7 @@ export type LockRecord = {
 
 export type ShareRecord = {
   creator: string;
+  beneficiary: string;
   id: string;
   total: string;
   vested: string;
@@ -64,16 +65,8 @@ const FALLBACK_TOKENS: CatalogItem[] = [
     coinType: "0xfec116479f1fd3cb9732cc768e6061b0e45b178a610b9bc23c2143a6493e794::memecoins::SPIKE",
     fa: "0xf199782bff16646c43de02fe1ca4244def5ea7abe0796a4f45002795e6f6ca35",
   },
-  {
-    symbol: "DAWGZ",
-    decimals: 8,
-    fa: "0x80f0251b74c76f1c477b9209ade65ffb5cfecd9b259875c3865ad645f6c33a3d",
-  },
-  {
-    symbol: "SOLID",
-    decimals: 8,
-    fa: "0xaa925a2232144c11dfe855178e1d252a8d0d4f51f5572fc0ec34efa6333952ae",
-  },
+  { symbol: "DAWGZ", decimals: 8, fa: "0x80f0251b74c76f1c477b9209ade65ffb5cfecd9b259875c3865ad645f6c33a3d" },
+  { symbol: "SOLID", decimals: 8, fa: "0xaa925a2232144c11dfe855178e1d252a8d0d4f51f5572fc0ec34efa6333952ae" },
 ];
 
 function cleanHex(value: string) {
@@ -305,7 +298,6 @@ export async function loadWalletBasics(addr: string) {
 export async function loadWalletExtras(addr: string, already: CoinBalance[] = []) {
   const coins = [...already];
   const tokens: CoinBalance[] = [];
-
   try {
     const resources = await accountResources(addr);
     for (const coinType of collectCoinStoreTypes(resources)) {
@@ -321,7 +313,6 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       });
     }
   } catch {}
-
   for (const item of FALLBACK_TOKENS) {
     if (item.coinType) {
       const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
@@ -348,7 +339,6 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       });
     }
   }
-
   try {
     const catalog = await tokenCatalog();
     for (let i = 0; i < catalog.length; i += 4) {
@@ -381,7 +371,6 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
       }));
     }
   } catch {}
-
   return { coins, tokens };
 }
 
@@ -413,6 +402,7 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
         const row = await view(`${PKG}::${mod}::preview`, types, ["0x" + padAddr(addr), String(id)]);
         const parsed = parsePreview(row);
         if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
+        if (asBig(parsed.amount) === 0n) continue;
         out.push({
           module: mod,
           kind: mod === "lock" ? "Coin lock" : "Token lock",
@@ -438,28 +428,28 @@ export async function loadShare(addr: string, extraCreator = ""): Promise<ShareR
       return "";
     }
   };
-  const creators = Array.from(new Set([safe(addr), safe(extraCreator), BUILDER].filter(Boolean)));
-  const whoList = Array.from(new Set([safe(addr), safe(extraCreator)].filter(Boolean)));
+  const creators = Array.from(new Set([safe(extraCreator), safe(addr), BUILDER].filter(Boolean)));
+  const who = safe(addr);
+  if (!who) return null;
   for (const creator of creators) {
     for (let id = 0; id < 6; id += 1) {
-      for (const who of whoList) {
-        try {
-          const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
-          const list = Array.isArray(row) ? row : [];
-          if (!list.length) continue;
-          const entitled = asBig(list[3]);
-          const total = asBig(list[0]);
-          if (total === 0n && entitled === 0n) continue;
-          return {
-            creator,
-            id: String(id),
-            total: formatAmount(list[0]),
-            vested: formatAmount(list[1]),
-            claimed: formatAmount(list[2]),
-            entitled: formatAmount(list[3]),
-          };
-        } catch {}
-      }
+      try {
+        const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
+        const list = Array.isArray(row) ? row : [];
+        if (!list.length) continue;
+        const entitled = asBig(list[3]);
+        const total = asBig(list[0]);
+        if (total === 0n && entitled === 0n) continue;
+        return {
+          creator,
+          beneficiary: who,
+          id: String(id),
+          total: formatAmount(list[0]),
+          vested: formatAmount(list[1]),
+          claimed: formatAmount(list[2]),
+          entitled: formatAmount(list[3]),
+        };
+      } catch {}
     }
   }
   return null;
