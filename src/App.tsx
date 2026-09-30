@@ -18,7 +18,6 @@ import {
   actions,
   BUILDER,
   CHAIN,
-  DEX_COINS,
   dateToUnix,
   loadLocks,
   loadShare,
@@ -47,15 +46,6 @@ declare global {
 const initialUnlock = unixToInput(Math.floor(Date.now() / 1000) + 180);
 const initialStart = unixToInput(Math.floor(Date.now() / 1000));
 const initialEnd = unixToInput(Math.floor(Date.now() / 1000) + 7 * 86400);
-const SUPRA_TOKEN: CoinBalance = {
-  symbol: "SUPRA",
-  amount: "0",
-  raw: 0n,
-  decimals: 8,
-  type: "0x1::supra_coin::SupraCoin",
-  coinType: "0x1::supra_coin::SupraCoin",
-  fa: "0xa",
-};
 
 function futureUnix(value: string) {
   const ts = dateToUnix(value);
@@ -119,7 +109,6 @@ function isAddr(value: string) {
 }
 
 function OathlockApp() {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [account, setAccount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -150,6 +139,7 @@ function OathlockApp() {
     const seen = new Set<string>();
     const out: CoinBalance[] = [];
     for (const item of [...coins, ...tokens]) {
+      if (item.raw <= 0n && item.symbol !== "SUPRA") continue;
       const key = (item.coinType || item.fa || item.type || item.symbol).toLowerCase();
       const alt = item.symbol.toLowerCase();
       if (seen.has(key) || seen.has(alt)) {
@@ -161,23 +151,17 @@ function OathlockApp() {
       seen.add(alt);
       out.push(item);
     }
-    return out.length ? out : account ? [SUPRA_TOKEN] : [];
-  }, [coins, tokens, account]);
+    return out;
+  }, [coins, tokens]);
 
   const selectedToken =
-    heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0] || SUPRA_TOKEN;
+    heldTokens.find((item) => (item.coinType || item.fa || item.type) === tokenKey) || heldTokens[0];
 
-  const coinOptions = useMemo(() => {
-    const held = heldTokens.filter((item) => item.coinType);
-    const extra = DEX_COINS.filter((item) => !held.some((row) => row.coinType === item.coinType));
-    return [...held, ...extra];
-  }, [heldTokens]);
-
+  const coinOptions = heldTokens.filter((item) => item.coinType && (item.raw > 0n || item.symbol === "SUPRA"));
   const firstCoin = coinOptions.find((item) => item.coinType === lpA) || coinOptions[0];
   const secondCoin =
     coinOptions.find((item) => item.coinType === lpB && item.coinType !== firstCoin?.coinType) ||
-    coinOptions.find((item) => item.coinType !== firstCoin?.coinType) ||
-    coinOptions[1];
+    coinOptions.find((item) => item.coinType !== firstCoin?.coinType);
   const sameDexPair = !firstCoin?.coinType || !secondCoin?.coinType || firstCoin.coinType === secondCoin.coinType;
   const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
@@ -189,7 +173,7 @@ function OathlockApp() {
       const rest = prev.filter((row) => row.symbol !== "SUPRA");
       return supra ? [supra, ...rest] : prev;
     });
-    setTokenKey((current) => current || basics.coins[0]?.coinType || SUPRA_TOKEN.coinType || "");
+    setTokenKey((current) => current || basics.coins[0]?.coinType || "");
     try { setLocks(await loadLocks(addr)); } catch {}
     try { setShare(await loadShare(addr, creator)); } catch {}
     try {
@@ -234,9 +218,8 @@ function OathlockApp() {
     try { await next.changeNetwork?.({ chainId: String(CHAIN) }); } catch {}
     setProvider(next);
     setBusy(false);
-    setCoins([SUPRA_TOKEN]);
     setAccount(accounts[0]);
-    setNotice({ tone: "success", text: `Connected ${shortAddress(accounts[0])} on Supra mainnet.` });
+    setNotice({ tone: "success", text: `Connected ${shortAddress(accounts[0])}. Loading this wallet’s tokens…` });
   }
 
   async function disconnect() {
@@ -247,6 +230,9 @@ function OathlockApp() {
     setTokens([]);
     setLocks([]);
     setShare(null);
+    setTokenKey("");
+    setLpA("");
+    setLpB("");
     setBusy(false);
     setNotice({ tone: "neutral", text: "Disconnected." });
   }
@@ -271,7 +257,7 @@ function OathlockApp() {
             ) : (
               <Button onClick={connect}><Wallet className="h-4 w-4" /> Connect</Button>
             )}
-            <Button className="mt-3" disabled={!lock.ready || busy} onClick={() => run("Claim lock", () => actions.claimLock(provider!, account, lock.module, lock.id, lock.coinType || "0x1::supra_coin::SupraCoin"))}>Claim</Button>
+            <button className="md:hidden" onClick={() => undefined}><Menu className="h-5 w-5" /></button>
           </div>
         </div>
       </header>
@@ -280,7 +266,7 @@ function OathlockApp() {
         <section className="mb-8 grid items-center gap-6 md:grid-cols-[1.2fr_.8fr]">
           <div>
             <h1 className="text-3xl font-semibold leading-tight md:text-5xl">Lock tokens, vest a team, and put a name on your wallet.</h1>
-            <p className="mt-3 max-w-xl text-white/60">No console. Connect StarKey, pick what this wallet holds, and keep the promise on-chain.</p>
+            <p className="mt-3 max-w-xl text-white/60">Lists only tokens this connected wallet holds. Nothing is prefilled from a public catalog.</p>
           </div>
           <img src={mascot} alt="Oathlock" className="mx-auto max-h-56 mix-blend-screen" />
         </section>
@@ -294,9 +280,15 @@ function OathlockApp() {
         <section id="lock" className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Token lock</h2>
-            <p className="mb-4 text-sm text-white/50">Every token this wallet holds, Coin or FA. Wait a few seconds after connect.</p>
-            <Field label="Token" hint="Wallet holdings">
-              <select className={inputClass()} value={selectedToken.coinType || selectedToken.fa || selectedToken.type} onChange={(e) => setTokenKey(e.target.value)}>
+            <p className="mb-4 text-sm text-white/50">
+              {heldTokens.length ? `${heldTokens.length} token${heldTokens.length === 1 ? "" : "s"} in this wallet.` : "Connect to load this wallet."}
+            </p>
+            <Field label="Token" hint="This wallet">
+              <select
+                className={inputClass()}
+                value={selectedToken ? (selectedToken.coinType || selectedToken.fa || selectedToken.type) : ""}
+                onChange={(e) => setTokenKey(e.target.value)}
+              >
                 {heldTokens.map((item) => (
                   <option key={item.coinType || item.fa || item.type} value={item.coinType || item.fa || item.type}>
                     {item.symbol} · {item.amount}
@@ -305,7 +297,7 @@ function OathlockApp() {
               </select>
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <Field label="Amount" hint={selectedToken.symbol}>
+              <Field label="Amount" hint={selectedToken?.symbol || ""}>
                 <input className={inputClass()} value={lockAmount} onChange={(e) => setLockAmount(e.target.value)} />
               </Field>
               <Field label="Unlock date">
@@ -317,8 +309,8 @@ function OathlockApp() {
                 <Clock3 className="h-4 w-4" /> 3 minute test lock
               </Button>
               <Button variant="secondary" disabled={!account || busy} onClick={() => run("Prepare store", () => actions.migrate(provider!, account))}>Prepare store</Button>
-              <Button disabled={!account || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), futureUnix(lockDate)))}>
-                Lock {selectedToken.symbol} <ArrowUpRight className="h-4 w-4" />
+              <Button disabled={!account || !selectedToken || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken!, toAmount(lockAmount, selectedToken!.decimals), futureUnix(lockDate)))}>
+                Lock {selectedToken?.symbol || ""} <ArrowUpRight className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -333,13 +325,13 @@ function OathlockApp() {
             </div>
             <div className="space-y-3">
               {locks.length ? locks.map((lock) => (
-                <div key={`${lock.module}-${lock.id}`} className="rounded-2xl border border-white/10 p-4">
+                <div key={`${lock.module}-${lock.id}-${lock.coinType || "fa"}`} className="rounded-2xl border border-white/10 p-4">
                   <div className="flex items-center justify-between">
                     <b>{lock.kind} #{lock.id}</b>
                     <span className={lock.ready ? "text-emerald-300" : "text-white/50"}>{lock.ready ? "Ready" : "Locked"}</span>
                   </div>
                   <p className="mt-1 text-sm text-white/70">{lock.amount} · unlock {new Date(lock.unlock * 1000).toLocaleString()}</p>
-                  <Button className="mt-3" disabled={!lock.ready || busy} onClick={() => run("Claim lock", () => actions.claimLock(provider!, account, lock.module, lock.id))}>Claim</Button>
+                  <Button className="mt-3" disabled={!lock.ready || busy} onClick={() => run("Claim lock", () => actions.claimLock(provider!, account, lock.module, lock.id, lock.coinType || "0x1::supra_coin::SupraCoin"))}>Claim</Button>
                 </div>
               )) : (
                 <div className="rounded-2xl border border-dashed border-white/15 px-4 py-10 text-center text-white/40">No open locks on this wallet.</div>
@@ -352,7 +344,7 @@ function OathlockApp() {
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Dexlyn LP lock</h2>
-              <p className="text-sm text-white/50">Needs two different Coin types. Pick SUPRA + LUCKY, not SUPRA twice.</p>
+              <p className="text-sm text-white/50">Only Coin-type tokens this wallet holds. Needs two different ones.</p>
             </div>
             <Button variant="ghost" disabled={!firstCoin || !secondCoin} onClick={() => {
               if (!firstCoin || !secondCoin) return;
@@ -386,22 +378,24 @@ function OathlockApp() {
             </Field>
             <Button disabled={!account || sameDexPair || busy} onClick={() => {
               if (sameDexPair) {
-                setNotice({ tone: "error", text: "Second coin is still SUPRA. Pick LUCKY, SPIKE, or dexUSDC." });
+                setNotice({ tone: "error", text: "This wallet needs two different Coin-type tokens to add Dexlyn LP." });
                 return;
               }
               run("Dexlyn LP lock", () => actions.lockLp(
                 provider!,
                 account,
-                firstCoin.coinType!,
-                secondCoin.coinType!,
-                toAmount(lpAmtA, firstCoin.decimals),
-                toAmount(lpAmtB, secondCoin.decimals),
+                firstCoin!.coinType!,
+                secondCoin!.coinType!,
+                toAmount(lpAmtA, firstCoin!.decimals),
+                toAmount(lpAmtB, secondCoin!.decimals),
                 futureUnix(lpDate),
               ));
             }}>
               Add LP and lock <ArrowUpRight className="h-4 w-4" />
             </Button>
-            {sameDexPair ? <p className="w-full text-sm text-rose-300">Pick two different coins. SUPRA + LUCKY is the usual pair.</p> : null}
+            {coinOptions.length < 2 ? (
+              <p className="w-full text-sm text-white/50">This wallet only has one Coin-type token, so Dexlyn LP cannot open yet. FA-only tokens can still be time-locked above.</p>
+            ) : null}
           </div>
         </section>
 
