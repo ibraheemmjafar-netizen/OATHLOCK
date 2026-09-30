@@ -5,7 +5,7 @@ export const BUILDER = PKG;
 export const RPC = "https://rpc-mainnet.supra.com";
 export const COIN = "0x1::supra_coin::SupraCoin";
 export const SUPRA_META = "0xa";
-export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000001";
+export const FRAMEWORK = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001";
 export const DEXLYN = "0x0dc694898dff98a1b0447e0992d0413e123ea80da1021d464a4fbaf0265870d8";
 export const CURVE = `${DEXLYN}::curves::Uncorrelated`;
 export const CHAIN = 8;
@@ -194,16 +194,16 @@ async function coinBalance(addr: string, coinType: string) {
 }
 
 async function faBalance(addr: string, meta: string) {
-  try {
-    const r = await view(
-      "0x1::primary_fungible_store::balance",
-      ["0x1::fungible_asset::Metadata"],
-      ["0x" + padAddr(addr), meta],
-    );
-    return asBig(r);
-  } catch {
-    return 0n;
+  const owner = "0x" + padAddr(addr);
+  const metadata = meta.startsWith("0x") ? meta : "0x" + meta;
+  for (const typeArg of ["0x1::object::ObjectCore", "0x1::fungible_asset::Metadata"]) {
+    try {
+      const r = await view("0x1::primary_fungible_store::balance", [typeArg], [owner, metadata]);
+      const n = asBig(r);
+      if (n > 0n) return n;
+    } catch {}
   }
+  return 0n;
 }
 
 function normalizeCoinType(value: string) {
@@ -212,14 +212,19 @@ function normalizeCoinType(value: string) {
 
 function collectCoinStoreTypes(resources: any[]): string[] {
   const out: string[] = [];
+  const add = (inner: string) => {
+    const type = inner.replace(/^0x0+/, "0x").replace(/^0x1::/, "0x1::").trim();
+    if (type && !out.includes(type)) out.push(type);
+  };
   const walk = (item: any) => {
-    const text = typeof item === "string" ? item : JSON.stringify(item || "");
-    const matches = text.match(/0x[a-fA-F0-9]+::coin::CoinStore<([^>]+)>/g) || [];
-    for (const match of matches) {
-      const inner = match.replace(/^.*CoinStore</, "").replace(/>$/, "");
-      if (inner && !out.includes(inner)) out.push(inner);
+    if (typeof item === "string") {
+      const matches = item.match(/CoinStore<([^>]+)>/g) || [];
+      for (const match of matches) add(match.replace(/^CoinStore</, "").replace(/>$/, ""));
+    } else if (Array.isArray(item)) {
+      item.forEach(walk);
+    } else if (item && typeof item === "object") {
+      Object.values(item).forEach(walk);
     }
-    if (Array.isArray(item)) item.forEach(walk);
   };
   walk(resources);
   return out;
@@ -268,7 +273,7 @@ async function readToken(addr: string, item: CatalogItem, coins: CoinBalance[], 
     });
   }
   if (item.fa) {
-    const raw = await faBalance(addr, item.fa.startsWith("0x") ? item.fa : "0x" + item.fa);
+    const raw = await faBalance(addr, item.fa);
     pushHeld(tokens, {
       symbol: item.symbol,
       amount: formatAmount(raw, item.decimals),
@@ -425,7 +430,6 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
   }
   return out;
 }
-
 
 export async function loadShare(addr: string, extraCreator = ""): Promise<ShareRecord | null> {
   const safe = (value: string) => {
