@@ -41,7 +41,6 @@ export type LockRecord = {
 
 export type ShareRecord = {
   creator: string;
-  beneficiary: string;
   id: string;
   total: string;
   vested: string;
@@ -59,29 +58,18 @@ const FALLBACK_TOKENS: CatalogItem[] = [
 ];
 
 function cleanHex(value: string) {
-  return String(value || "").trim().replace(/^0x/i, "").replace(/\./g, "").toLowerCase();
-}
-
-export function isFullAddr(value: string) {
-  const hex = cleanHex(value);
-  return hex.length === 64 && !/[^0-9a-f]/.test(hex);
+  return String(value || "").trim().replace(/^0x/i, "").toLowerCase();
 }
 
 export function padAddr(value: string) {
-  const hex = cleanHex(value);
-  if (hex.length !== 64 || /[^0-9a-f]/.test(hex)) {
-    throw new Error("Paste the full 64-character 0x address from StarKey");
-  }
-  return hex;
+  const hex = cleanHex(value).replace(/\./g, "");
+  if (!hex || hex.length > 64 || /[^0-9a-f]/.test(hex)) throw new Error("Need a full 0x wallet address");
+  return hex.padStart(64, "0");
 }
 
 export function shortAddress(value: string) {
-  try {
-    const hex = "0x" + padAddr(value);
-    return hex.slice(0, 6) + "..." + hex.slice(-4);
-  } catch {
-    return value || "";
-  }
+  const hex = "0x" + padAddr(value);
+  return hex.slice(0, 6) + "..." + hex.slice(-4);
 }
 
 export function formatAmount(raw: bigint | number | string, decimals = 8) {
@@ -375,30 +363,31 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
   return out;
 }
 
-export async function loadShare(beneficiary: string, creatorHint = ""): Promise<ShareRecord | null> {
-  if (!isFullAddr(beneficiary)) return null;
-  const who = "0x" + padAddr(beneficiary);
-  const creators = Array.from(
-    new Set([creatorHint, BUILDER].filter((v) => v && isFullAddr(v)).map((v) => "0x" + padAddr(v))),
-  );
+export async function loadShare(addr: string, extraCreator = ""): Promise<ShareRecord | null> {
+  const candidates = [addr, extraCreator, BUILDER].filter(Boolean);
+  const creators = Array.from(new Set(candidates.map((v) => "0x" + padAddr(v))));
+  const whoList = Array.from(new Set([addr, extraCreator].filter(Boolean).map((v) => "0x" + padAddr(v))));
   for (const creator of creators) {
-    for (let id = 0; id < 8; id += 1) {
-      try {
-        const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
-        const list = Array.isArray(row) ? row : [];
-        if (!list.length) continue;
-        if (asBig(list[0]) === 0n && asBig(list[3]) === 0n) continue;
-        return {
-          creator,
-          beneficiary: who,
-          id: String(id),
-          total: formatAmount(list[0]),
-          vested: formatAmount(list[1]),
-          claimed: formatAmount(list[2]),
-          entitled: formatAmount(list[3]),
-        };
-      } catch {
-        // next vault
+    for (let id = 0; id < 6; id += 1) {
+      for (const who of whoList) {
+        try {
+          const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
+          const list = Array.isArray(row) ? row : [];
+          if (!list.length) continue;
+          const entitled = asBig(list[3]);
+          const total = asBig(list[0]);
+          if (total === 0n && entitled === 0n) continue;
+          return {
+            creator,
+            id: String(id),
+            total: formatAmount(list[0]),
+            vested: formatAmount(list[1]),
+            claimed: formatAmount(list[2]),
+            entitled: formatAmount(list[3]),
+          };
+        } catch {
+          // next pair
+        }
       }
     }
   }

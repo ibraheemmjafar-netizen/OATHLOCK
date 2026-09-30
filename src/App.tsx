@@ -96,7 +96,15 @@ function inputClass() {
 }
 
 function isAddr(value: string) {
-  return /^0x[a-fA-F0-9]{64}$/.test(value.trim());
+  return /^0x[a-fA-F0-9]{16,64}$/.test(value.trim());
+}
+
+function futureUnix(value: string) {
+  const ts = dateToUnix(value);
+  if (ts <= Math.floor(Date.now() / 1000) + 15) {
+    throw new Error("Unlock time must be in the future. Press 3 minute test lock.");
+  }
+  return ts;
 }
 
 function OathlockApp() {
@@ -123,13 +131,7 @@ function OathlockApp() {
   const [vaultAmt, setVaultAmt] = useState("0.01");
   const [vaultStart, setVaultStart] = useState(initialStart);
   const [vaultEnd, setVaultEnd] = useState(initialEnd);
-  const [vaultCreator, setVaultCreator] = useState(() => {
-    try {
-      return localStorage.getItem("oathlock.creator") || "";
-    } catch {
-      return "";
-    }
-  });
+  const [vaultCreator, setVaultCreator] = useState("");
   const [name, setName] = useState("");
   const [listPrice, setListPrice] = useState("0.02");
   const [nameTo, setNameTo] = useState("");
@@ -174,7 +176,7 @@ function OathlockApp() {
     try {
       setShare(await loadShare(addr, creator));
     } catch {
-      setShare(null);
+      // keep current share
     }
     try {
       const extra = await loadWalletExtras(addr, basics.coins);
@@ -244,12 +246,9 @@ function OathlockApp() {
 
   function saveCreator(value: string) {
     setVaultCreator(value);
-    try {
-      localStorage.setItem("oathlock.creator", value);
-    } catch {
-      // ignore
-    }
   }
+
+  const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
   return (
     <div className="min-h-screen bg-[#07080f] text-white">
@@ -344,7 +343,7 @@ function OathlockApp() {
               <Button variant="secondary" disabled={!account || busy} onClick={() => run("Prepare store", () => actions.migrate(provider!, account))}>
                 Prepare store
               </Button>
-              <Button disabled={!account || !selectedToken || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), dateToUnix(lockDate)))}>
+              <Button disabled={!account || !selectedToken || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), futureUnix(lockDate)))}>
                 Lock {selectedToken?.symbol || "token"} <ArrowUpRight className="h-4 w-4" />
               </Button>
             </div>
@@ -429,7 +428,7 @@ function OathlockApp() {
                 secondCoin.coinType!,
                 toAmount(lpAmtA, firstCoin.decimals),
                 toAmount(lpAmtB, secondCoin.decimals),
-                dateToUnix(lpDate),
+                futureUnix(lpDate),
               ));
             }}>
               Add LP and lock <ArrowUpRight className="h-4 w-4" />
@@ -440,10 +439,8 @@ function OathlockApp() {
         <section id="vesting" className="mt-4 grid gap-4 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Create a team vault</h2>
-            <p className="mb-4 text-sm text-white/50">
-              Create with the paying wallet. Who gets it must be the other wallet’s full 64-character 0x from StarKey, not a name.
-            </p>
-            <Field label="Who gets it" hint="Full recipient 0x">
+            <p className="mb-4 text-sm text-white/50">SUPRA vesting, on-chain schedule. Who gets it must be a 0x wallet, not a name.</p>
+            <Field label="Who gets it" hint="Wallet address">
               <input className={inputClass()} value={vaultTo} placeholder="0x…" onChange={(e) => setVaultTo(e.target.value.trim())} />
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -459,7 +456,7 @@ function OathlockApp() {
             </div>
             <Button className="mt-4" disabled={!account || busy} onClick={() => {
               if (!isAddr(vaultTo)) {
-                setNotice({ tone: "error", text: "Who gets it must be the full 64-character 0x from StarKey." });
+                setNotice({ tone: "error", text: "Who gets it must be a 0x wallet address." });
                 return;
               }
               saveCreator(account);
@@ -472,9 +469,9 @@ function OathlockApp() {
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
             <p className="mb-4 text-sm text-white/50">
-              Connect the recipient wallet. Paste only the creator 0x — the wallet that clicked Create vault.
+              Connect the recipient wallet. Paste the creator 0x — the wallet that clicked Create vault.
             </p>
-            <Field label="Vault created by" hint="Creator 0x only">
+            <Field label="Vault created by" hint="Creator 0x">
               <input
                 className={inputClass()}
                 value={vaultCreator}
@@ -482,13 +479,7 @@ function OathlockApp() {
                 onChange={(e) => saveCreator(e.target.value.trim())}
               />
             </Field>
-            <Button variant="ghost" className="mt-3" onClick={() => {
-              if (vaultCreator && !isAddr(vaultCreator)) {
-                setNotice({ tone: "error", text: "Vault created by must be the full creator 0x." });
-                return;
-              }
-              refresh();
-            }}>Find my share</Button>
+            <Button variant="ghost" className="mt-3" onClick={() => refresh()}>Find my share</Button>
             {share ? (
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Vault</b>#{share.id}</div>
@@ -499,16 +490,14 @@ function OathlockApp() {
                 <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">You can take</b>{share.entitled}</div>
               </div>
             ) : (
-              <p className="mt-4 text-sm text-white/45">No share found for this connected wallet.</p>
+              <p className="mt-4 text-sm text-white/45">No share found for this wallet yet.</p>
             )}
-            <Button className="mt-4" disabled={!account || !share || busy} onClick={() => {
-              if (!share) {
-                setNotice({ tone: "error", text: "Find the share first with the recipient wallet connected." });
-                return;
-              }
-              run("Claim share", () => actions.claimShare(provider!, account, share.creator, share.id));
-            }}>
-              Claim vested SUPRA
+            <Button
+              className="mt-4"
+              disabled={!account || !share || busy || claimed}
+              onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}
+            >
+              {claimed ? "Already claimed" : "Claim vested SUPRA"}
             </Button>
           </div>
         </section>
@@ -559,7 +548,7 @@ function OathlockApp() {
           </div>
           <Button className="mt-3" disabled={!account || busy} onClick={() => {
             if (!isAddr(nameTo)) {
-              setNotice({ tone: "error", text: "Send-to must be the full 64-character 0x." });
+              setNotice({ tone: "error", text: "Send-to must be a 0x wallet." });
               return;
             }
             run("Transfer name", () => actions.transferName(provider!, account, name.trim().toLowerCase(), nameTo));
