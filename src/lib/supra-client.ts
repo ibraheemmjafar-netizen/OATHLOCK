@@ -154,7 +154,7 @@ export async function view(fn: string, typeArgs: string[], args: unknown[]) {
       if (json?.message) continue;
       return json.result || json.response?.result || json;
     } catch {
-      // try next rpc version
+      // next
     }
   }
   throw new Error("View failed: " + fn);
@@ -171,7 +171,7 @@ function asBig(value: unknown): bigint {
 
 async function coinBalance(addr: string, coinType: string) {
   try {
-    const r = await view("0x1::coin::balance", [coinType], [addr]);
+    const r = await view("0x1::coin::balance", [coinType], ["0x" + padAddr(addr)]);
     return asBig(r);
   } catch {
     return 0n;
@@ -183,7 +183,7 @@ async function faBalance(addr: string, meta: string) {
     const r = await view(
       "0x1::primary_fungible_store::balance",
       ["0x1::fungible_asset::Metadata"],
-      [addr, meta],
+      ["0x" + padAddr(addr), meta],
     );
     return asBig(r);
   } catch {
@@ -229,7 +229,7 @@ async function accountResources(addr: string) {
 }
 
 function pushHeld(list: CoinBalance[], item: CoinBalance) {
-  if (item.raw <= 0n) return;
+  if (item.raw <= 0n && item.symbol !== "SUPRA") return;
   const key = (item.coinType || item.fa || item.symbol).toLowerCase();
   const idx = list.findIndex((row) => (row.coinType || row.fa || row.symbol).toLowerCase() === key || row.symbol === item.symbol);
   if (idx >= 0) {
@@ -259,7 +259,7 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
       });
     }
   } catch {
-    // fallback list is enough
+    // fallback
   }
   const seen = new Set<string>();
   catalogCache = extra.filter((item) => {
@@ -275,7 +275,7 @@ export async function loadWalletBasics(addr: string) {
   const coins: CoinBalance[] = [];
   const tokens: CoinBalance[] = [];
   const supra = await coinBalance(addr, COIN);
-  pushHeld(coins, {
+  coins.push({
     symbol: "SUPRA",
     amount: formatAmount(supra, 8),
     raw: supra,
@@ -365,7 +365,7 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
     const types = mod === "lock" ? [COIN] : [];
     for (let id = 0; id < 8; id += 1) {
       try {
-        const row = await view(`${PKG}::${mod}::preview`, types, [addr, String(id)]);
+        const row = await view(`${PKG}::${mod}::preview`, types, ["0x" + padAddr(addr), String(id)]);
         const parsed = parsePreview(row);
         if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
         out.push({
@@ -414,7 +414,7 @@ export async function loadShare(addr: string, extraCreator = ""): Promise<ShareR
             entitled: formatAmount(list[3]),
           };
         } catch {
-          // next pair
+          // next
         }
       }
     }

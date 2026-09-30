@@ -46,6 +46,14 @@ const initialUnlock = unixToInput(Math.floor(Date.now() / 1000) + 180);
 const initialStart = unixToInput(Math.floor(Date.now() / 1000));
 const initialEnd = unixToInput(Math.floor(Date.now() / 1000) + 7 * 86400);
 
+function futureUnix(value: string) {
+  const ts = dateToUnix(value);
+  if (ts <= Math.floor(Date.now() / 1000) + 15) {
+    throw new Error("Unlock time must be in the future. Press 3 minute test lock.");
+  }
+  return ts;
+}
+
 function Button({
   children,
   variant = "primary",
@@ -99,14 +107,6 @@ function isAddr(value: string) {
   return /^0x[a-fA-F0-9]{16,64}$/.test(value.trim());
 }
 
-function futureUnix(value: string) {
-  const ts = dateToUnix(value);
-  if (ts <= Math.floor(Date.now() / 1000) + 15) {
-    throw new Error("Unlock time must be in the future. Press 3 minute test lock.");
-  }
-  return ts;
-}
-
 function OathlockApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [provider, setProvider] = useState<Provider | null>(null);
@@ -158,6 +158,7 @@ function OathlockApp() {
   const coinOptions = coins.filter((item) => item.coinType);
   const firstCoin = coinOptions.find((item) => (item.coinType || item.type) === lpA) || coinOptions[0];
   const secondCoin = coinOptions.find((item) => (item.coinType || item.type) === lpB) || coinOptions[1] || coinOptions[0];
+  const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
   const refresh = useCallback(async (addr = account, creator = vaultCreator) => {
     if (!addr) return;
@@ -170,21 +171,15 @@ function OathlockApp() {
     try {
       const nextLocks = await loadLocks(addr);
       if (nextLocks.length) setLocks(nextLocks);
-    } catch {
-      // keep current locks
-    }
+    } catch {}
     try {
       setShare(await loadShare(addr, creator));
-    } catch {
-      // keep current share
-    }
+    } catch {}
     try {
       const extra = await loadWalletExtras(addr, basics.coins);
       setCoins(extra.coins);
       setTokens(extra.tokens);
-    } catch {
-      // SUPRA already shown
-    }
+    } catch {}
   }, [account, vaultCreator]);
 
   useEffect(() => {
@@ -221,9 +216,7 @@ function OathlockApp() {
     const accounts = await next.connect({ chainId: CHAIN });
     try {
       await next.changeNetwork?.({ chainId: String(CHAIN) });
-    } catch {
-      // already on mainnet
-    }
+    } catch {}
     setProvider(next);
     setAccount(accounts[0]);
     setNotice({ tone: "success", text: `Connected ${shortAddress(accounts[0])} on Supra mainnet.` });
@@ -232,9 +225,7 @@ function OathlockApp() {
   async function disconnect() {
     try {
       await provider?.disconnect?.();
-    } catch {
-      // ignore
-    }
+    } catch {}
     setProvider(null);
     setAccount("");
     setCoins([]);
@@ -243,12 +234,6 @@ function OathlockApp() {
     setShare(null);
     setNotice({ tone: "neutral", text: "Disconnected." });
   }
-
-  function saveCreator(value: string) {
-    setVaultCreator(value);
-  }
-
-  const claimed = !!(share && Number(share.entitled) <= Number(share.claimed));
 
   return (
     <div className="min-h-screen bg-[#07080f] text-white">
@@ -290,14 +275,6 @@ function OathlockApp() {
             <p className="mt-3 max-w-xl text-white/60">
               No console. Connect StarKey, pick what this wallet holds, and keep the promise on-chain.
             </p>
-            <div className="mt-5 flex flex-wrap gap-3">
-              <Button onClick={() => document.getElementById("lock")?.scrollIntoView({ behavior: "smooth" })}>
-                Create a lock <ArrowUpRight className="h-4 w-4" />
-              </Button>
-              <Button variant="ghost" onClick={() => document.getElementById("names")?.scrollIntoView({ behavior: "smooth" })}>
-                How it works
-              </Button>
-            </div>
           </div>
           <img src={mascot} alt="Oathlock" className="mx-auto max-h-56 mix-blend-screen" />
         </section>
@@ -312,20 +289,21 @@ function OathlockApp() {
 
         <section id="lock" className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-            <div className="mb-4 flex items-start justify-between">
-              <div>
-                <h2 className="text-xl font-semibold">Token lock</h2>
-                <p className="text-sm text-white/50">Tokens this wallet actually holds.</p>
-              </div>
-              <LockKeyhole className="h-4 w-4 text-violet-300" />
-            </div>
+            <h2 className="text-xl font-semibold">Token lock</h2>
+            <p className="mb-4 text-sm text-white/50">Tokens this wallet actually holds.</p>
             <Field label="Token" hint="Wallet holdings">
-              <select className={inputClass()} value={selectedToken ? (selectedToken.coinType || selectedToken.fa || selectedToken.type) : ""} onChange={(e) => setTokenKey(e.target.value)}>
+              <select
+                className={inputClass()}
+                value={selectedToken ? (selectedToken.coinType || selectedToken.fa || selectedToken.type) : "0x1::supra_coin::SupraCoin"}
+                onChange={(e) => setTokenKey(e.target.value)}
+              >
                 {heldTokens.length ? heldTokens.map((item) => (
                   <option key={item.coinType || item.fa || item.type} value={item.coinType || item.fa || item.type}>
                     {item.symbol} · {item.amount}
                   </option>
-                )) : <option value="">{account ? "Loading tokens…" : "Connect to load tokens"}</option>}
+                )) : (
+                  <option value="0x1::supra_coin::SupraCoin">{account ? "SUPRA" : "Connect to load tokens"}</option>
+                )}
               </select>
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -343,7 +321,9 @@ function OathlockApp() {
               <Button variant="secondary" disabled={!account || busy} onClick={() => run("Prepare store", () => actions.migrate(provider!, account))}>
                 Prepare store
               </Button>
-              <Button disabled={!account || !selectedToken || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken, toAmount(lockAmount, selectedToken.decimals), futureUnix(lockDate)))}>
+              <Button disabled={!account || busy} onClick={() => run("Lock", () => actions.lockToken(provider!, account, selectedToken || {
+                symbol: "SUPRA", amount: "0", raw: 0n, decimals: 8, type: "0x1::supra_coin::SupraCoin", coinType: "0x1::supra_coin::SupraCoin",
+              }, toAmount(lockAmount, selectedToken?.decimals || 8), futureUnix(lockDate)))}>
                 Lock {selectedToken?.symbol || "token"} <ArrowUpRight className="h-4 w-4" />
               </Button>
             </div>
@@ -384,7 +364,7 @@ function OathlockApp() {
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Dexlyn LP lock</h2>
-              <p className="text-sm text-white/50">Pick two different coins. Dexlyn has no on-chain preview yet, so LP locks will not appear in the list until that view exists.</p>
+              <p className="text-sm text-white/50">Pick two different coins.</p>
             </div>
             <Button variant="ghost" disabled={!firstCoin || !secondCoin} onClick={() => {
               if (!firstCoin || !secondCoin) return;
@@ -439,7 +419,7 @@ function OathlockApp() {
         <section id="vesting" className="mt-4 grid gap-4 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Create a team vault</h2>
-            <p className="mb-4 text-sm text-white/50">SUPRA vesting, on-chain schedule. Who gets it must be a 0x wallet, not a name.</p>
+            <p className="mb-4 text-sm text-white/50">Who gets it must be a 0x wallet, not a name.</p>
             <Field label="Who gets it" hint="Wallet address">
               <input className={inputClass()} value={vaultTo} placeholder="0x…" onChange={(e) => setVaultTo(e.target.value.trim())} />
             </Field>
@@ -459,7 +439,6 @@ function OathlockApp() {
                 setNotice({ tone: "error", text: "Who gets it must be a 0x wallet address." });
                 return;
               }
-              saveCreator(account);
               run("Create vault", () => actions.createVault(provider!, account, vaultTo, toAmount(vaultAmt), dateToUnix(vaultStart), dateToUnix(vaultEnd)));
             }}>
               Create vault
@@ -468,16 +447,9 @@ function OathlockApp() {
 
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
-            <p className="mb-4 text-sm text-white/50">
-              Connect the recipient wallet. Paste the creator 0x — the wallet that clicked Create vault.
-            </p>
+            <p className="mb-4 text-sm text-white/50">Connect the recipient wallet. Paste the creator 0x.</p>
             <Field label="Vault created by" hint="Creator 0x">
-              <input
-                className={inputClass()}
-                value={vaultCreator}
-                placeholder="0x of the wallet that created the vault"
-                onChange={(e) => saveCreator(e.target.value.trim())}
-              />
+              <input className={inputClass()} value={vaultCreator} placeholder="0x of the wallet that created the vault" onChange={(e) => setVaultCreator(e.target.value.trim())} />
             </Field>
             <Button variant="ghost" className="mt-3" onClick={() => refresh()}>Find my share</Button>
             {share ? (
@@ -492,11 +464,7 @@ function OathlockApp() {
             ) : (
               <p className="mt-4 text-sm text-white/45">No share found for this wallet yet.</p>
             )}
-            <Button
-              className="mt-4"
-              disabled={!account || !share || busy || claimed}
-              onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}
-            >
+            <Button className="mt-4" disabled={!account || !share || busy || claimed} onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}>
               {claimed ? "Already claimed" : "Claim vested SUPRA"}
             </Button>
           </div>
@@ -508,8 +476,7 @@ function OathlockApp() {
             <CircleHelp className="h-4 w-4 text-white/40" />
           </div>
           <p className="mb-4 max-w-3xl text-sm text-white/55">
-            A name is a public handle stored on Oathlock, like a username. It is not a payment address yet.
-            People cannot send SUPRA to <b>oathlock.supra</b>. They look the name up here, see the owner 0x, then send to that wallet.
+            A name is a public handle stored on Oathlock. People cannot send SUPRA to oathlock.supra. They look the name up here, see the owner 0x, then send to that wallet.
           </p>
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
             <Field label="Name">
