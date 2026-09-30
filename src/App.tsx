@@ -96,7 +96,7 @@ function inputClass() {
 }
 
 function isAddr(value: string) {
-  return /^0x[a-fA-F0-9]{16,64}$/.test(value.trim());
+  return /^0x[a-fA-F0-9]{64}$/.test(value.trim());
 }
 
 function OathlockApp() {
@@ -174,7 +174,7 @@ function OathlockApp() {
     try {
       setShare(await loadShare(addr, creator));
     } catch {
-      // keep current share
+      setShare(null);
     }
     try {
       const extra = await loadWalletExtras(addr, basics.coins);
@@ -440,8 +440,10 @@ function OathlockApp() {
         <section id="vesting" className="mt-4 grid gap-4 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Create a team vault</h2>
-            <p className="mb-4 text-sm text-white/50">SUPRA vesting, on-chain schedule. Who gets it must be a 0x wallet, not a name.</p>
-            <Field label="Who gets it" hint="Wallet address">
+            <p className="mb-4 text-sm text-white/50">
+              Create with the paying wallet. Who gets it must be the other wallet’s full 64-character 0x from StarKey, not a name.
+            </p>
+            <Field label="Who gets it" hint="Full recipient 0x">
               <input className={inputClass()} value={vaultTo} placeholder="0x…" onChange={(e) => setVaultTo(e.target.value.trim())} />
             </Field>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -457,7 +459,7 @@ function OathlockApp() {
             </div>
             <Button className="mt-4" disabled={!account || busy} onClick={() => {
               if (!isAddr(vaultTo)) {
-                setNotice({ tone: "error", text: "Who gets it must be a 0x wallet address." });
+                setNotice({ tone: "error", text: "Who gets it must be the full 64-character 0x from StarKey." });
                 return;
               }
               saveCreator(account);
@@ -470,17 +472,23 @@ function OathlockApp() {
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
             <h2 className="text-xl font-semibold">Your share</h2>
             <p className="mb-4 text-sm text-white/50">
-              Paste the creator wallet or the recipient wallet. The site checks both.
+              Connect the recipient wallet. Paste only the creator 0x — the wallet that clicked Create vault.
             </p>
-            <Field label="Vault created by" hint="Creator or recipient 0x">
+            <Field label="Vault created by" hint="Creator 0x only">
               <input
                 className={inputClass()}
                 value={vaultCreator}
-                placeholder="0x of creator or recipient"
+                placeholder="0x of the wallet that created the vault"
                 onChange={(e) => saveCreator(e.target.value.trim())}
               />
             </Field>
-            <Button variant="ghost" className="mt-3" onClick={() => refresh()}>Find my share</Button>
+            <Button variant="ghost" className="mt-3" onClick={() => {
+              if (vaultCreator && !isAddr(vaultCreator)) {
+                setNotice({ tone: "error", text: "Vault created by must be the full creator 0x." });
+                return;
+              }
+              refresh();
+            }}>Find my share</Button>
             {share ? (
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">Vault</b>#{share.id}</div>
@@ -491,9 +499,15 @@ function OathlockApp() {
                 <div className="rounded-2xl bg-black/30 p-3"><b className="block text-white/40">You can take</b>{share.entitled}</div>
               </div>
             ) : (
-              <p className="mt-4 text-sm text-white/45">No share found for this wallet yet.</p>
+              <p className="mt-4 text-sm text-white/45">No share found for this connected wallet.</p>
             )}
-            <Button className="mt-4" disabled={!account || !share || busy} onClick={() => run("Claim share", () => actions.claimShare(provider!, account, share!.creator, share!.id))}>
+            <Button className="mt-4" disabled={!account || !share || busy} onClick={() => {
+              if (!share) {
+                setNotice({ tone: "error", text: "Find the share first with the recipient wallet connected." });
+                return;
+              }
+              run("Claim share", () => actions.claimShare(provider!, account, share.creator, share.id));
+            }}>
               Claim vested SUPRA
             </Button>
           </div>
@@ -545,7 +559,7 @@ function OathlockApp() {
           </div>
           <Button className="mt-3" disabled={!account || busy} onClick={() => {
             if (!isAddr(nameTo)) {
-              setNotice({ tone: "error", text: "Send-to must be a 0x wallet." });
+              setNotice({ tone: "error", text: "Send-to must be the full 64-character 0x." });
               return;
             }
             run("Transfer name", () => actions.transferName(provider!, account, name.trim().toLowerCase(), nameTo));

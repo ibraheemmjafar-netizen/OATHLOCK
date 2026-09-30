@@ -1,4 +1,3 @@
-// src/lib/supra-client.ts
 import { BCS, HexString } from "supra-l1-sdk";
 
 export const PKG = "0x8bf4f925f0a654d7b6715cfb7d3d7e5c3cb6e8907c1a134d80aabc45db64f5fb";
@@ -42,6 +41,7 @@ export type LockRecord = {
 
 export type ShareRecord = {
   creator: string;
+  beneficiary: string;
   id: string;
   total: string;
   vested: string;
@@ -59,18 +59,29 @@ const FALLBACK_TOKENS: CatalogItem[] = [
 ];
 
 function cleanHex(value: string) {
-  return String(value || "").trim().replace(/^0x/i, "").toLowerCase();
+  return String(value || "").trim().replace(/^0x/i, "").replace(/\./g, "").toLowerCase();
+}
+
+export function isFullAddr(value: string) {
+  const hex = cleanHex(value);
+  return hex.length === 64 && !/[^0-9a-f]/.test(hex);
 }
 
 export function padAddr(value: string) {
-  const hex = cleanHex(value).replace(/\./g, "");
-  if (!hex || hex.length > 64 || /[^0-9a-f]/.test(hex)) throw new Error("Need a full 0x wallet address");
-  return hex.padStart(64, "0");
+  const hex = cleanHex(value);
+  if (hex.length !== 64 || /[^0-9a-f]/.test(hex)) {
+    throw new Error("Paste the full 64-character 0x address from StarKey");
+  }
+  return hex;
 }
 
 export function shortAddress(value: string) {
-  const hex = "0x" + padAddr(value);
-  return hex.slice(0, 6) + "..." + hex.slice(-4);
+  try {
+    const hex = "0x" + padAddr(value);
+    return hex.slice(0, 6) + "..." + hex.slice(-4);
+  } catch {
+    return value || "";
+  }
 }
 
 export function formatAmount(raw: bigint | number | string, decimals = 8) {
@@ -166,8 +177,7 @@ function asBig(value: unknown): bigint {
 
 async function coinBalance(addr: string, coinType: string) {
   try {
-    const r = await view("0x1::coin::balance", [coinType], [addr]);
-    return asBig(r);
+    return asBig(await view("0x1::coin::balance", [coinType], [addr]));
   } catch {
     return 0n;
   }
@@ -175,12 +185,7 @@ async function coinBalance(addr: string, coinType: string) {
 
 async function faBalance(addr: string, meta: string) {
   try {
-    const r = await view(
-      "0x1::primary_fungible_store::balance",
-      ["0x1::fungible_asset::Metadata"],
-      [addr, meta],
-    );
-    return asBig(r);
+    return asBig(await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [addr, meta]));
   } catch {
     return 0n;
   }
@@ -247,7 +252,7 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
       });
     }
   } catch {
-    // fallback list is enough to show known wallet tokens
+    // fallback list is enough
   }
   const seen = new Set<string>();
   catalogCache = extra.filter((item) => {
@@ -273,8 +278,7 @@ export async function loadWalletBasics(addr: string) {
     fa: SUPRA_META,
   });
   try {
-    const resources = await accountResources(addr);
-    for (const coinType of collectCoinStoreTypes(resources)) {
+    for (const coinType of collectCoinStoreTypes(await accountResources(addr))) {
       const raw = await coinBalance(addr, coinType);
       const symbol = coinType.split("::").pop() || "COIN";
       pushHeld(coins, {
@@ -297,8 +301,7 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
   const tokens: CoinBalance[] = [];
   const catalog = await tokenCatalog();
   for (let i = 0; i < catalog.length; i += 4) {
-    const batch = catalog.slice(i, i + 4);
-    await Promise.all(batch.map(async (item) => {
+    await Promise.all(catalog.slice(i, i + 4).map(async (item) => {
       if (item.coinType) {
         const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
         pushHeld(coins, {
@@ -353,8 +356,7 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
     const types = mod === "lock" ? [COIN] : [];
     for (let id = 0; id < 8; id += 1) {
       try {
-        const row = await view(`${PKG}::${mod}::preview`, types, [addr, String(id)]);
-        const parsed = parsePreview(row);
+        const parsed = parsePreview(await view(`${PKG}::${mod}::preview`, types, [addr, String(id)]));
         if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
         out.push({
           module: mod,
@@ -373,31 +375,30 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
   return out;
 }
 
-export async function loadShare(addr: string, extraCreator = ""): Promise<ShareRecord | null> {
-  const candidates = [addr, extraCreator, BUILDER].filter(Boolean);
-  const creators = Array.from(new Set(candidates.map((v) => "0x" + padAddr(v))));
-  const whoList = Array.from(new Set([addr, extraCreator].filter(Boolean).map((v) => "0x" + padAddr(v))));
+export async function loadShare(beneficiary: string, creatorHint = ""): Promise<ShareRecord | null> {
+  if (!isFullAddr(beneficiary)) return null;
+  const who = "0x" + padAddr(beneficiary);
+  const creators = Array.from(
+    new Set([creatorHint, BUILDER].filter((v) => v && isFullAddr(v)).map((v) => "0x" + padAddr(v))),
+  );
   for (const creator of creators) {
-    for (let id = 0; id < 6; id += 1) {
-      for (const who of whoList) {
-        try {
-          const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
-          const list = Array.isArray(row) ? row : [];
-          if (!list.length) continue;
-          const entitled = asBig(list[3]);
-          const total = asBig(list[0]);
-          if (total === 0n && entitled === 0n) continue;
-          return {
-            creator,
-            id: String(id),
-            total: formatAmount(list[0]),
-            vested: formatAmount(list[1]),
-            claimed: formatAmount(list[2]),
-            entitled: formatAmount(list[3]),
-          };
-        } catch {
-          // next pair
-        }
+    for (let id = 0; id < 8; id += 1) {
+      try {
+        const row: any = await view(`${PKG}::vesting::preview_share`, [COIN], [creator, String(id), who]);
+        const list = Array.isArray(row) ? row : [];
+        if (!list.length) continue;
+        if (asBig(list[0]) === 0n && asBig(list[3]) === 0n) continue;
+        return {
+          creator,
+          beneficiary: who,
+          id: String(id),
+          total: formatAmount(list[0]),
+          vested: formatAmount(list[1]),
+          claimed: formatAmount(list[2]),
+          entitled: formatAmount(list[3]),
+        };
+      } catch {
+        // next vault
       }
     }
   }
@@ -426,9 +427,8 @@ export async function lookupName(name: string) {
     }
     try {
       const listing: any = await view(`${PKG}::names::listing_of`, [], [n]);
-      const list = Array.isArray(listing) ? listing : [];
       listed = true;
-      price = formatAmount(list[1] || 0);
+      price = formatAmount(Array.isArray(listing) ? listing[1] : 0);
     } catch {
       listed = false;
     }
@@ -495,38 +495,16 @@ export const actions = {
   },
 
   claimLock: (provider: Provider, account: string, mod: "lock" | "fa_lock", id: string) =>
-    sendEntry(
-      provider,
-      account,
-      mod,
-      "claim",
-      mod === "lock" ? [COIN] : [],
-      [bcsAddr(account), bcsU64(id)],
-    ),
+    sendEntry(provider, account, mod, "claim", mod === "lock" ? [COIN] : [], [bcsAddr(account), bcsU64(id)]),
 
-  lockLp: (
-    provider: Provider,
-    account: string,
-    coinX: string,
-    coinY: string,
-    amountX: string,
-    amountY: string,
-    unlock: number,
-  ) =>
+  lockLp: (provider: Provider, account: string, coinX: string, coinY: string, amountX: string, amountY: string, unlock: number) =>
     sendEntry(provider, account, "dexlyn_lp", "add_and_lock", [coinX, coinY, CURVE], [
       bcsU64(amountX),
       bcsU64(amountY),
       bcsU64(unlock),
     ]),
 
-  createVault: (
-    provider: Provider,
-    account: string,
-    recipient: string,
-    amount: string,
-    start: number,
-    end: number,
-  ) =>
+  createVault: (provider: Provider, account: string, recipient: string, amount: string, start: number, end: number) =>
     sendEntry(provider, account, "vesting", "create_team_vault", [COIN], [
       bcsAddrVec([recipient]),
       bcsU64Vec([10000]),
@@ -538,10 +516,7 @@ export const actions = {
     ]),
 
   claimShare: (provider: Provider, account: string, creator: string, id: string | number) =>
-    sendEntry(provider, account, "vesting", "claim_share", [COIN], [
-      bcsAddr(creator),
-      bcsU64(id),
-    ]),
+    sendEntry(provider, account, "vesting", "claim_share", [COIN], [bcsAddr(creator), bcsU64(id)]),
 
   registerName: (provider: Provider, account: string, name: string) =>
     sendEntry(provider, account, "names", "register", [], [bcsStr(name)]),
