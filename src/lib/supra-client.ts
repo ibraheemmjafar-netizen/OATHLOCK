@@ -132,8 +132,14 @@ export function bcsU64Vec(values: Array<string | number>) {
 }
 
 async function rpc<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(RPC + path, init);
-  return res.json() as Promise<T>;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(RPC + path, { ...init, signal: ctrl.signal });
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function view(fn: string, typeArgs: string[], args: unknown[]) {
@@ -165,7 +171,8 @@ function asBig(value: unknown): bigint {
 
 async function coinBalance(addr: string, coinType: string) {
   try {
-    return asBig(await view("0x1::coin::balance", [coinType], [addr]));
+    const r = await view("0x1::coin::balance", [coinType], [addr]);
+    return asBig(r);
   } catch {
     return 0n;
   }
@@ -173,7 +180,12 @@ async function coinBalance(addr: string, coinType: string) {
 
 async function faBalance(addr: string, meta: string) {
   try {
-    return asBig(await view("0x1::primary_fungible_store::balance", ["0x1::fungible_asset::Metadata"], [addr, meta]));
+    const r = await view(
+      "0x1::primary_fungible_store::balance",
+      ["0x1::fungible_asset::Metadata"],
+      [addr, meta],
+    );
+    return asBig(r);
   } catch {
     return 0n;
   }
@@ -201,13 +213,17 @@ function collectCoinStoreTypes(resources: any[]): string[] {
 async function accountResources(addr: string) {
   const pages: any[] = [];
   let cursor = "";
-  for (let i = 0; i < 8; i += 1) {
-    const q = cursor ? `?start=${encodeURIComponent(cursor)}` : "";
-    const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`);
-    const list = json.Resources?.resource || json.resource || json;
-    if (Array.isArray(list)) pages.push(...list);
-    cursor = json.Resources?.cursor || json.cursor || "";
-    if (!cursor) break;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const q = cursor ? `?start=${encodeURIComponent(cursor)}` : "";
+      const json: any = await rpc(`/rpc/v1/accounts/0x${padAddr(addr)}/resources${q}`);
+      const list = json.Resources?.resource || json.resource || json;
+      if (Array.isArray(list)) pages.push(...list);
+      cursor = json.Resources?.cursor || json.cursor || "";
+      if (!cursor) break;
+    } catch {
+      break;
+    }
   }
   return pages;
 }
@@ -229,7 +245,10 @@ async function tokenCatalog(): Promise<CatalogItem[]> {
   if (catalogCache) return catalogCache;
   const extra: CatalogItem[] = [...FALLBACK_TOKENS];
   try {
-    const list = await fetch(TOKEN_LIST).then((r) => r.json());
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const list = await fetch(TOKEN_LIST, { signal: ctrl.signal }).then((r) => r.json());
+    clearTimeout(timer);
     const rows = Array.isArray(list) ? list : list.tokens || list.data || [];
     for (const row of rows) {
       extra.push({
@@ -266,7 +285,8 @@ export async function loadWalletBasics(addr: string) {
     fa: SUPRA_META,
   });
   try {
-    for (const coinType of collectCoinStoreTypes(await accountResources(addr))) {
+    const resources = await accountResources(addr);
+    for (const coinType of collectCoinStoreTypes(resources)) {
       const raw = await coinBalance(addr, coinType);
       const symbol = coinType.split("::").pop() || "COIN";
       pushHeld(coins, {
@@ -289,7 +309,8 @@ export async function loadWalletExtras(addr: string, already: CoinBalance[] = []
   const tokens: CoinBalance[] = [];
   const catalog = await tokenCatalog();
   for (let i = 0; i < catalog.length; i += 4) {
-    await Promise.all(catalog.slice(i, i + 4).map(async (item) => {
+    const batch = catalog.slice(i, i + 4);
+    await Promise.all(batch.map(async (item) => {
       if (item.coinType) {
         const raw = await coinBalance(addr, normalizeCoinType(item.coinType));
         pushHeld(coins, {
@@ -344,7 +365,8 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
     const types = mod === "lock" ? [COIN] : [];
     for (let id = 0; id < 8; id += 1) {
       try {
-        const parsed = parsePreview(await view(`${PKG}::${mod}::preview`, types, [addr, String(id)]));
+        const row = await view(`${PKG}::${mod}::preview`, types, [addr, String(id)]);
+        const parsed = parsePreview(row);
         if (!parsed.beneficiary && !Number(parsed.unlock)) continue;
         out.push({
           module: mod,
@@ -364,9 +386,15 @@ export async function loadLocks(addr: string): Promise<LockRecord[]> {
 }
 
 export async function loadShare(addr: string, extraCreator = ""): Promise<ShareRecord | null> {
-  const candidates = [addr, extraCreator, BUILDER].filter(Boolean);
-  const creators = Array.from(new Set(candidates.map((v) => "0x" + padAddr(v))));
-  const whoList = Array.from(new Set([addr, extraCreator].filter(Boolean).map((v) => "0x" + padAddr(v))));
+  const safe = (value: string) => {
+    try {
+      return "0x" + padAddr(value);
+    } catch {
+      return "";
+    }
+  };
+  const creators = Array.from(new Set([safe(addr), safe(extraCreator), BUILDER].filter(Boolean)));
+  const whoList = Array.from(new Set([safe(addr), safe(extraCreator)].filter(Boolean)));
   for (const creator of creators) {
     for (let id = 0; id < 6; id += 1) {
       for (const who of whoList) {
@@ -416,8 +444,9 @@ export async function lookupName(name: string) {
     }
     try {
       const listing: any = await view(`${PKG}::names::listing_of`, [], [n]);
+      const list = Array.isArray(listing) ? listing : [];
       listed = true;
-      price = formatAmount(Array.isArray(listing) ? listing[1] : 0);
+      price = formatAmount(list[1] || 0);
     } catch {
       listed = false;
     }
@@ -484,16 +513,38 @@ export const actions = {
   },
 
   claimLock: (provider: Provider, account: string, mod: "lock" | "fa_lock", id: string) =>
-    sendEntry(provider, account, mod, "claim", mod === "lock" ? [COIN] : [], [bcsAddr(account), bcsU64(id)]),
+    sendEntry(
+      provider,
+      account,
+      mod,
+      "claim",
+      mod === "lock" ? [COIN] : [],
+      [bcsAddr(account), bcsU64(id)],
+    ),
 
-  lockLp: (provider: Provider, account: string, coinX: string, coinY: string, amountX: string, amountY: string, unlock: number) =>
+  lockLp: (
+    provider: Provider,
+    account: string,
+    coinX: string,
+    coinY: string,
+    amountX: string,
+    amountY: string,
+    unlock: number,
+  ) =>
     sendEntry(provider, account, "dexlyn_lp", "add_and_lock", [coinX, coinY, CURVE], [
       bcsU64(amountX),
       bcsU64(amountY),
       bcsU64(unlock),
     ]),
 
-  createVault: (provider: Provider, account: string, recipient: string, amount: string, start: number, end: number) =>
+  createVault: (
+    provider: Provider,
+    account: string,
+    recipient: string,
+    amount: string,
+    start: number,
+    end: number,
+  ) =>
     sendEntry(provider, account, "vesting", "create_team_vault", [COIN], [
       bcsAddrVec([recipient]),
       bcsU64Vec([10000]),
@@ -505,7 +556,10 @@ export const actions = {
     ]),
 
   claimShare: (provider: Provider, account: string, creator: string, id: string | number) =>
-    sendEntry(provider, account, "vesting", "claim_share", [COIN], [bcsAddr(creator), bcsU64(id)]),
+    sendEntry(provider, account, "vesting", "claim_share", [COIN], [
+      bcsAddr(creator),
+      bcsU64(id),
+    ]),
 
   registerName: (provider: Provider, account: string, name: string) =>
     sendEntry(provider, account, "names", "register", [], [bcsStr(name)]),
